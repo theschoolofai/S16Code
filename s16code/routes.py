@@ -323,6 +323,11 @@ async def complete_waiting_job(body: CompletionBody, request: Request):
         source_uri=None, source_author=None, run_id=run_id, resume=True,
         transport=request.app.state.gateway,
     )
+    # The decision that started this run recorded `run_status` at triage time.
+    # Without this the event history reports a resumed run as `waiting` forever,
+    # so work that succeeded reads as stuck.
+    request.app.state.event_store.update_run_status(run_id, result["status"])
+
     channel_delivery = None
     origin = _channel_origin(runtime, run_id)
     if origin is not None and result["status"] in {"completed", "failed"}:

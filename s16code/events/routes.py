@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -80,12 +81,39 @@ async def liveness(request: Request):
     return JSONResponse(status, status_code=200 if status["alive"] else 503)
 
 
+def _parked_on_a_human(request: Request) -> list[dict[str, Any]]:
+    """Runs blocked on a human gate, with the question each is asking.
+
+    Which capability parks for a person is a property of the capability, declared
+    as family `human_gate`, so this asks the registry rather than memorising a
+    list of skill names.
+    """
+    runtime = request.app.state.runtime
+    gates = runtime.registry.family("human_gate")
+    parked: list[dict[str, Any]] = []
+    for handle, _event_type, run_id in runtime.graph.waiting_handles():
+        try:
+            snapshot = runtime.graph.snapshot(run_id)
+        except KeyError:
+            continue
+        for node in snapshot.nodes.values():
+            wait = node.get("wait") or {}
+            if (node.get("state") == "waiting" and node.get("skill") in gates
+                    and wait.get("handle") == handle):
+                parked.append({"run_id": run_id, "handle": handle,
+                               "skill": node.get("skill"),
+                               "question": wait.get("question", ""),
+                               "choices": wait.get("choices") or []})
+    return parked
+
+
 @router.get("/report")
 async def report(request: Request, hours: int = Query(default=24, ge=1, le=720),
                  fmt: str = Query(default="json", pattern="^(json|markdown)$")):
     """The human-reviewable account of a period nobody watched."""
     since = datetime.now(UTC) - timedelta(hours=hours)
-    document = morning_report(request.app.state.event_store, since=since)
+    document = morning_report(request.app.state.event_store, since=since,
+                              pending_approvals=lambda: _parked_on_a_human(request))
     if fmt == "markdown":
         return PlainTextResponse(render_markdown(document))
     return document

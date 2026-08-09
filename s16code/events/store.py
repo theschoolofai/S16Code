@@ -172,6 +172,26 @@ class EventStore:
             record["decisions"].append(decision)
             self._save(state)
 
+    def update_run_status(self, run_id: str, status: str) -> bool:
+        """Record a run's final outcome against the decision that started it.
+
+        `add_decision` writes `run_status` once, at triage time. A run that parks
+        on a human gate and finishes later would otherwise be reported as
+        `waiting` forever — the misleading direction, because work that succeeded
+        looks stuck. Returns True if a decision was updated.
+        """
+        with self._lock:
+            state = self._load()
+            changed = False
+            for record in state["events"]:
+                for decision in record["decisions"]:
+                    if decision.get("run_id") == run_id and decision.get("run_status") != status:
+                        decision["run_status"] = status
+                        changed = True
+            if changed:
+                self._save(state)
+            return changed
+
     def events(self, *, after: int = 0, limit: int | None = None) -> list[dict[str, Any]]:
         with self._lock:
             found = [record for record in self._load()["events"] if record["sequence"] > after]
