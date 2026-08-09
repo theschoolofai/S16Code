@@ -198,14 +198,42 @@ class EventStore:
 
     # ---------------------------------------------------------- window ledger
 
-    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0) -> None:
+    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0,
+                      count: int = 1) -> None:
         with self._lock:
             state = self._load()
             bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
             entry = bucket.setdefault(kind, {"count": 0, "usd": 0.0})
-            entry["count"] += 1
+            entry["count"] += count
             entry["usd"] = round(entry["usd"] + max(0.0, float(usd)), 12)
             self._save(state)
+
+    def window_reserve(self, subscription_id: str, day: str, *, kind: str,
+                       limit: int | None) -> tuple[bool, int]:
+        """Claim one slot in the window, atomically. Returns (reserved, count).
+
+        Reading a count and incrementing it later is not a ceiling when the two
+        halves are separated by an `await`: several concurrent deciders all read
+        the same pre-run number, all conclude there is room, and all proceed. The
+        increment has to happen in the same critical section as the check, which
+        is what this does. `limit=None` means "no ceiling": the slot is still
+        claimed, so an operator's snapshot stays truthful either way.
+
+        A reserved slot is not released if the run then fails. That is
+        deliberate: a run that started and blew up still consumed the agent's
+        attention and possibly money, and the conservative direction for a
+        ceiling is to count it.
+        """
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
+            entry = bucket.setdefault(kind, {"count": 0, "usd": 0.0})
+            current = int(entry["count"])
+            if limit is not None and current >= limit:
+                return False, current
+            entry["count"] = current + 1
+            self._save(state)
+            return True, current + 1
 
     def window_count(self, subscription_id: str, day: str, *, kind: str) -> int:
         with self._lock:

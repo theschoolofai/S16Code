@@ -144,8 +144,11 @@ class AutonomousEventEngine:
                         budget=budget, transport=transport,
                         initial_evidence={"event": event.model_dump(mode="json")},
                     )
+                    # count=0: admit_run already claimed this run's slot. Only
+                    # the spend is still unknown until the run has finished.
                     self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
+                                         usd=float(result.get("spend_usd") or 0.0), now=now,
+                                         count=0)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision

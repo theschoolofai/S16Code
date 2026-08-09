@@ -8,6 +8,7 @@ exactly like a peaceful night.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -246,3 +247,53 @@ def test_a_compacted_history_still_refuses_a_duplicate(tmp_path) -> None:
     record, fresh = store.ingest(_event(id="e0"))  # body long gone
     assert fresh is False
     assert record.get("compacted") is True
+
+
+class _SlowRuntime(_Runtime):
+    """A runtime that takes long enough for a second decider to interleave."""
+
+    async def run(self, *, prompt: str, **_: object) -> dict[str, object]:
+        self.runs.append(prompt)
+        await asyncio.sleep(0.02)
+        return {"run_id": f"run-{len(self.runs)}", "status": "completed", "spend_usd": self.spend}
+
+
+async def test_the_run_ceiling_holds_when_events_arrive_together(tmp_path) -> None:
+    """The ceiling has to hold for concurrent arrivals, not just a for-loop.
+
+    The count is read at admission and written after the run, with an `await`
+    in between, so several deciders can read the same pre-run number and each
+    conclude there is room. That is the case the governor exists for: an agent
+    woken by a stream of events, where the arrivals are exactly what is being
+    bounded.
+    """
+    store = EventStore(tmp_path)
+    runtime = _SlowRuntime()
+    engine = AutonomousEventEngine(store, runtime, max_concurrent=4)
+    store.put_subscription(_subscription(max_runs_per_day=1))
+    llm = _relevance_llm()
+
+    await asyncio.gather(*(engine.process(_event(id=f"burst-{i}"), llm=llm) for i in range(4)))
+
+    day = datetime.now(UTC).date().isoformat()
+    assert len(runtime.runs) == 1, "the ceiling is 1; concurrent arrivals must not walk around it"
+    assert store.window_count("watch", day, kind="run") == 1
+    refusals = [item for item in store.refusals() if item["control"] == "max_runs_per_day"]
+    assert len(refusals) == 3, "each refusal must leave a trace, not just not happen"
+
+
+async def test_a_run_refused_for_money_does_not_consume_a_run_slot(tmp_path) -> None:
+    """Admission claims a slot, so it must not claim one on the way to a refusal."""
+    store = EventStore(tmp_path)
+    runtime = _Runtime(spend=0.004)
+    engine = AutonomousEventEngine(store, runtime)
+    store.put_subscription(_subscription(budget=0.01, daily_budget=0.008, max_runs_per_day=10))
+    llm = _relevance_llm()
+
+    for index in range(4):
+        await engine.process(_event(id=f"money-{index}"), llm=llm)
+
+    day = datetime.now(UTC).date().isoformat()
+    assert any(item["control"] == "daily_budget" for item in store.refusals())
+    # Two runs happened; the budget refusals after them must not have counted.
+    assert store.window_count("watch", day, kind="run") == len(runtime.runs)
