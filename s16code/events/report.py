@@ -65,6 +65,13 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
     acted: list[dict[str, Any]] = []
     ignored: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
+    # A governor refusal is written twice on purpose: as the decision attached to
+    # its event (so it shows beside that event) and in the refusals ledger (so it
+    # survives the event body being compacted away). The two views overlap, so we
+    # key every blocked entry by (event, control, subscription) and let the ledger
+    # only *add* refusals the decisions did not already carry — chiefly intake
+    # refusals (self_trigger, source_rate_limit), which never become a decision.
+    seen_blocks: set[tuple[str | None, str | None, str | None]] = set()
     triage_spend = 0.0
     for record in considered:
         event = record["event"]
@@ -74,7 +81,9 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                      "subscription": decision.get("subscription_id"),
                      "reason": decision.get("reason", "")}
             if decision.get("refused_by"):
-                blocked.append({**entry, "control": decision["refused_by"]})
+                control = decision["refused_by"]
+                blocked.append({**entry, "control": control})
+                seen_blocks.add((entry["event"], control, entry["subscription"]))
             elif decision.get("relevant"):
                 acted.append({**entry, "run_id": decision.get("run_id"),
                               "status": decision.get("run_status")})
@@ -82,10 +91,22 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                 ignored.append(entry)
 
     refusals = store.refusals(since=window_start)
+    ledger_only: list[dict[str, Any]] = []
+    for item in refusals:
+        source = (item.get("event") or {}).get("source")
+        event_id = (item.get("event") or {}).get("id")
+        key = (f"{source}/{event_id}", item.get("control"), item.get("subscription_id"))
+        if key in seen_blocks:
+            continue  # already surfaced as this event's decision; do not double-count
+        seen_blocks.add(key)
+        ledger_only.append({"event": key[0], "control": item.get("control"),
+                            "reason": item.get("reason"), "subscription": item.get("subscription_id")})
+
     subscriptions = store.subscriptions()
     budgets = [governor.snapshot(item, now=moment) for item in subscriptions]
     run_spend = sum(item["run_spend_usd"] for item in budgets)
 
+    refused = blocked + ledger_only
     return {
         "generated_at": moment.isoformat(),
         "window_start": window_start.isoformat(),
@@ -94,7 +115,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
             "events_seen": len(considered),
             "acted": len(acted),
             "ignored": len(ignored),
-            "blocked_by_a_control": len(blocked) + len(refusals),
+            "blocked_by_a_control": len(refused),
             # The two bills the session insists on separating: what it cost to
             # be awake, and what it cost to do something.
             "cost_of_watching_usd": round(triage_spend, 10),
@@ -102,11 +123,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
         },
         "acted": acted,
         "ignored": ignored,
-        "refused": blocked + [{"event": f"{(item.get('event') or {}).get('source')}/"
-                                        f"{(item.get('event') or {}).get('id')}",
-                               "control": item.get("control"), "reason": item.get("reason"),
-                               "subscription": item.get("subscription_id")}
-                              for item in refusals],
+        "refused": refused,
         "budgets": budgets,
         "awaiting_a_human": [],
     }
