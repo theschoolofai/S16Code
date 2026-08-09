@@ -161,6 +161,19 @@ class GraphStore:
             events = self._load(run_id)["events"]
             return self._as_event(events[-1]) if events else None
 
+    def waiting_handles(self) -> list[tuple[str, str, str]]:
+        """Every outstanding wait, as (handle, event_type, run_id).
+
+        Reads the handle index, which `complete_waiting` clears, so this is the
+        live set of things a run is still blocked on — no graph scan needed.
+        """
+        with self._lock:
+            entries = []
+            for key, run_id in self._read_index().items():
+                handle, _, event_type = key.partition("|")
+                entries.append((handle, event_type, run_id))
+            return sorted(entries)
+
     def snapshot(self, run_id: str) -> GraphSnapshot:
         with self._lock:
             graph = self._load(run_id)["graph"]

@@ -16,6 +16,7 @@ either a quiet night or a dead watcher, and those must not look the same.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -46,7 +47,14 @@ def liveness_status(store: EventStore, *, now: datetime | None = None,
 
 
 def morning_report(store: EventStore, *, since: datetime | None = None,
-                   now: datetime | None = None) -> dict[str, Any]:
+                   now: datetime | None = None,
+                   pending_approvals: Callable[[], list[dict[str, Any]]] | None = None
+                   ) -> dict[str, Any]:
+    """`pending_approvals` supplies the runs parked on a human gate.
+
+    Injected rather than read from the runtime so this stays a pure function of
+    the store, and so a caller without a live graph still gets a report.
+    """
     moment = now or datetime.now(UTC)
     window_start = since or (moment - timedelta(hours=24))
     governor = AutonomyGovernor(store)
@@ -108,8 +116,20 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                                "subscription": item.get("subscription_id")}
                               for item in refusals],
         "budgets": budgets,
-        "awaiting_a_human": [],
+        # A report that cannot say a decision is waiting is how a parked run sits
+        # unnoticed. A broken lookup must not cost the rest of the account, so
+        # the section degrades to empty rather than failing the whole report.
+        "awaiting_a_human": _pending_or_empty(pending_approvals),
     }
+
+
+def _pending_or_empty(resolver: Callable[[], list[dict[str, Any]]] | None) -> list[dict[str, Any]]:
+    if resolver is None:
+        return []
+    try:
+        return list(resolver())
+    except Exception:  # noqa: BLE001 - the night's account outlives a bad lookup
+        return []
 
 
 def render_markdown(report: dict[str, Any]) -> str:
