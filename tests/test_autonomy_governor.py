@@ -230,6 +230,37 @@ async def test_the_report_separates_watching_from_doing_and_shows_what_was_ignor
     assert report["ignored"][0]["reason"]
 
 
+async def test_the_report_counts_each_refusal_exactly_once(tmp_path) -> None:
+    """"What a rule stopped" is the number an operator reads to tell a
+    well-defended night from an idle one. A governor refusal is written to two
+    places by design — a per-event decision (so it shows next to the event) and
+    the refusals ledger (so it is visible even when the body is compacted away).
+    The report must reconcile those two views, not sum them, or a single blocked
+    run reads as two and the operator over-counts the threat.
+    """
+    store = EventStore(tmp_path)
+    runtime = _Runtime()
+    engine = AutonomousEventEngine(store, runtime)
+    store.put_subscription(_subscription(max_runs_per_day=1))
+    llm = _relevance_llm()
+
+    # Three relevant events, one run allowed, two refused by the window ceiling.
+    for index in range(3):
+        await engine.process(_event(id=f"run-{index}"), llm=llm)
+
+    assert len(runtime.runs) == 1
+    ledger = [item for item in store.refusals() if item["control"] == "max_runs_per_day"]
+    assert len(ledger) == 2  # the ground truth: exactly two runs were blocked
+
+    report = morning_report(store)
+    assert report["totals"]["acted"] == 1
+    # The two blocked runs must be counted once, not once per storage location.
+    assert report["totals"]["blocked_by_a_control"] == 2
+    refused_keys = [(item.get("event"), item.get("control")) for item in report["refused"]]
+    assert len(refused_keys) == 2
+    assert len(set(refused_keys)) == 2  # and no duplicate rows
+
+
 # ------------------------------------------------------- history and identity
 
 
