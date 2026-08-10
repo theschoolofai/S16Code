@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 import s16code.routes as agent_route
 import s16code.runtime as runtime_module
@@ -195,7 +197,11 @@ def test_calendar_skill_is_general_and_uses_planner_supplied_iso_dates(app_clien
         "allowed_side_effects": ["remember_explicit_fact", "create_calendar_events"]}).json()
     artifacts = body["graph"]["nodes"]["calendar"]["result"]["artifacts"]
     assert len(artifacts) == 2
-    assert all(Path(uri.removeprefix("file://")).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
+    def _uri_to_path(uri: str) -> Path:
+        parsed = urlparse(uri)
+        return Path(url2pathname(unquote(parsed.path)))
+
+    assert all(_uri_to_path(uri).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
 
 
 def test_failed_file_read_is_visible_to_the_final_answer(app_client, monkeypatch, tmp_path):

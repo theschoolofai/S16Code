@@ -162,7 +162,18 @@ class BudgetedGateway:
                 detail=detail,
             )
 
-        body = self.ladder.request_for(decision.tier, overrides=request)
+        parts = (self.budget.principal or "").split("/")
+        tenant = parts[0] if len(parts) > 0 and parts[0] else None
+        project = parts[1] if len(parts) > 1 and parts[1] else None
+        user = parts[2] if len(parts) > 2 and parts[2] else None
+        overrides = {
+            "session": self.budget.run_id,
+            "tenant": tenant,
+            "project": project,
+            "user": user,
+            **(request or {}),
+        }
+        body = self.ladder.request_for(decision.tier, overrides=overrides)
         started = time.time()
         response = await self.transport.chat(prompt=prompt, system=system, request=body)
         latency_ms = (time.time() - started) * 1000.0
