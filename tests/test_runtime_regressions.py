@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import s16code.routes as agent_route
 import s16code.runtime as runtime_module
 from s16code.core.memory.embeddings import DeterministicEmbedder
+from s16code.tools import file_uri_to_path
 
 
 def _patch(add=None, reason="next outcome earned this frontier"):
@@ -195,7 +195,40 @@ def test_calendar_skill_is_general_and_uses_planner_supplied_iso_dates(app_clien
         "allowed_side_effects": ["remember_explicit_fact", "create_calendar_events"]}).json()
     artifacts = body["graph"]["nodes"]["calendar"]["result"]["artifacts"]
     assert len(artifacts) == 2
-    assert all(Path(uri.removeprefix("file://")).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
+    assert all(file_uri_to_path(uri).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
+
+
+def test_verify_artifact_reads_back_its_own_file_uri(app_client, monkeypatch):
+    """verify_artifact must be able to read the exact file:// URI a prior node in
+    the same run just handed it. On Windows, ``Path("C:/x").as_uri()`` produces a
+    triple-slash URI (``file:///C:/x``) because the drive letter needs its own
+    leading slash; run_verify_artifact converted that back with
+    ``Path(str(httpx.URL(uri).path))``, which leaves a bare leading slash in
+    front of the drive letter (``/C:/x``) that pathlib refuses to treat as
+    drive-rooted. The artifact genuinely exists and is genuinely owned by this
+    run, so a PermissionError here is a false refusal, not a real control."""
+    app_client.app.state.runtime.memory.embedder = DeterministicEmbedder(128)
+
+    def decide(context):
+        states = _states(context)
+        if not states:
+            return _patch([_task("calendar", "create_calendar_events", {
+                "title": "Mom's birthday", "dates": ["2026-05-15"]})])
+        if states.get("calendar") == "succeeded" and "verify" not in states:
+            uri = context["latest_event"]["outcome"]["artifacts"][0]
+            return _patch([_task("verify", "verify_artifact", {"uri": uri}, ["calendar"])])
+        if states.get("verify") == "succeeded" and "answer" not in states:
+            return _patch([_task("answer", "answer_with_evidence", {"query": context["goal"]},
+                                ["calendar", "verify"])])
+        return _patch(reason="wait for requested side effects")
+
+    _install_agent(monkeypatch, decide)
+    body = app_client.post("/v1/agent/runs", json={"tenant_id": "t", "project_id": "birthday",
+        "prompt": "My mom's birthday is 15 May 2026. Make a reminder that day.",
+        "allowed_side_effects": ["create_calendar_events"]}).json()
+    verify_node = body["graph"]["nodes"]["verify"]
+    assert verify_node["state"] == "succeeded", verify_node.get("result")
+    assert verify_node["result"]["text"].startswith("BEGIN:VCALENDAR")
 
 
 def test_failed_file_read_is_visible_to_the_final_answer(app_client, monkeypatch, tmp_path):

@@ -46,6 +46,7 @@ from s16code.tools import (
     date_shift,
     fetch_url,
     file_sha256,
+    file_uri_to_path,
     query_csv,
     sandbox_directories,
     sandbox_files,
@@ -347,10 +348,10 @@ class AgentRuntime:
                              overwrite=bool(task.input.get("overwrite", False)))
 
         async def run_verify_artifact(task: TaskSpec) -> dict[str, Any]:
-            parsed = httpx.URL(task.input["uri"])
-            if parsed.scheme != "file":
-                raise ValueError("verify_artifact requires a file:// URI")
-            candidate = Path(str(parsed.path)).resolve()
+            try:
+                candidate = file_uri_to_path(task.input["uri"]).resolve()
+            except ValueError as error:
+                raise ValueError("verify_artifact requires a file:// URI") from error
             owned = (runtime.root / "artifacts" / run_id).resolve()
             if candidate == owned or owned not in candidate.parents or not candidate.is_file():
                 raise PermissionError("artifact is not a file owned by this run")

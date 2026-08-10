@@ -15,7 +15,8 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+from urllib.request import url2pathname
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -124,6 +125,24 @@ def copy_file(source: str, destination: str, *, overwrite: bool = False) -> dict
     return {"source": str(origin), "destination": str(target), "uri": target.as_uri(),
             "bytes": len(destination_payload), "source_sha256": source_hash,
             "destination_sha256": destination_hash, "match": source_hash == destination_hash}
+
+
+def file_uri_to_path(uri: str) -> Path:
+    """Convert a ``file://`` URI back into a filesystem path.
+
+    ``Path.as_uri()`` on Windows emits a *triple*-slash URI for a drive-rooted
+    path (``file:///C:/Users/...``) because the drive letter needs its own
+    leading slash. Slicing that string by hand (``removeprefix("file://")`` or
+    reading ``httpx.URL(uri).path`` directly) only strips two of the three
+    slashes, leaving ``/C:/Users/...`` — a string pathlib refuses to treat as
+    drive-rooted, since a bare leading slash makes ``C:`` look like an
+    ordinary folder name. ``url2pathname`` is the stdlib's own inverse of
+    ``as_uri()`` and handles this correctly on every platform.
+    """
+    parsed = urlsplit(uri)
+    if parsed.scheme != "file":
+        raise ValueError(f"expected a file:// URI, got {uri!r}")
+    return Path(url2pathname(parsed.path))
 
 
 _BINARY = {
