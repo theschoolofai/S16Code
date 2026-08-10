@@ -94,6 +94,11 @@ class GatewayClient:
             "cache_creation_input_tokens": body.get("cache_creation_input_tokens") or 0,
             "latency_ms": body.get("latency_ms"),
             "stop_reason": body.get("stop_reason"),
+            # The gateway prices every call it serves. Dropping that here left the
+            # unbudgeted path unpriceable, so `daily_triage_budget` accrued $0.00
+            # per triage no matter how many events arrived: a ceiling that cannot
+            # be reached is not a ceiling.
+            "cost": body.get("cost") or {},
         }
 
     async def complete(
@@ -107,9 +112,21 @@ class GatewayClient:
         """The unbudgeted path, for a run created without a ceiling."""
         body: dict[str, Any] = {"session": session, **(request or {})}
         result = await self.chat(prompt=prompt, system=system, request=body)
+        cost = result.get("cost") or {}
+        total_usd = float(cost.get("total_usd") or 0.0)
         return {
             "text": result["text"], "provider": result["provider"], "model": result["model"],
             "input_tokens": result["input_tokens"], "output_tokens": result["output_tokens"],
+            "cost": cost,
+            # Unbudgeted does not mean unmetered. Callers on this path (the
+            # relevance gate above all) price the reply through
+            # `events.engine._spend_of`, which reads this key, so a decision not
+            # to act still costs money somebody has to count.
+            "metered_calls": [{
+                "provider": result["provider"], "model": result["model"],
+                "input_tokens": result["input_tokens"], "output_tokens": result["output_tokens"],
+                "cost_usd": total_usd,
+            }],
         }
 
     async def health(self) -> dict[str, Any]:
