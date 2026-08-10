@@ -7,9 +7,10 @@ database file; the only seam is HTTP.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -46,6 +47,27 @@ async def lifespan(app: FastAPI):
     data_dir = app.state.runtime.root
     app.state.event_store = EventStore(data_dir / "events")
     app.state.event_engine = AutonomousEventEngine(app.state.event_store, app.state.runtime)
+
+    # The pulse has to mean "I am alive", not "an event arrived". Beating only on
+    # ingest made a correctly idle watcher report itself dead after
+    # STALE_AFTER_SECONDS, so the alarm fired on the very behaviour Section 8 calls
+    # right, and a fresh process was dead on arrival until something happened to it.
+    app.state.event_store.beat(note="process started")
+    heartbeat_seconds = max(1.0, float(os.getenv("S16_HEARTBEAT_SECONDS", "60")))
+
+    async def _heartbeat() -> None:
+        while True:
+            try:
+                await asyncio.sleep(heartbeat_seconds)
+                app.state.event_store.beat(note="idle heartbeat")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failed beat must not kill the pulse: the next tick tries again,
+                # and a genuinely stuck store still goes stale and raises the alarm.
+                continue
+
+    app.state.heartbeat_task = asyncio.create_task(_heartbeat())
     bearers, api_keys = _secrets("S16_A2A_BEARER_TOKENS"), _secrets("S16_A2A_API_KEYS")
     base_url = os.getenv("S16_BASE_URL", f"http://127.0.0.1:{PORT}").rstrip("/")
     card = {
@@ -119,6 +141,9 @@ async def lifespan(app: FastAPI):
         await app.state.a2a_grpc_server.start()
     app.state.started_at = time.time()
     yield
+    app.state.heartbeat_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.heartbeat_task
     if app.state.a2a_grpc_server:
         await app.state.a2a_grpc_server.stop()
     await app.state.a2a_server.close()

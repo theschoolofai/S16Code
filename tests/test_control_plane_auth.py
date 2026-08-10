@@ -70,10 +70,20 @@ def test_the_completion_callback_has_its_own_token_and_also_fails_closed(
 
 
 def test_read_only_observability_is_available_to_an_operator(app_client) -> None:
-    """Liveness answers 503 when the watcher is silent, which is the alarm."""
+    """Liveness answers 200 while beating, and the report is readable unauthenticated.
+
+    This previously asserted 503 for a freshly started process, because the
+    heartbeat only advanced when an event arrived, so a process that had just come
+    up had never beaten. That made a healthy idle watcher indistinguishable from a
+    dead one — the exact ambiguity §9 exists to remove. The process now beats on
+    startup and on a timer, so a live agent says so with no events at all.
+
+    The alarm itself is asserted separately, against a genuinely stale beat, in
+    `test_liveness_does_not_require_events.py`.
+    """
     liveness = app_client.get("/v1/agent/liveness")
-    assert liveness.status_code == 503
-    assert liveness.json()["alive"] is False
+    assert liveness.status_code == 200
+    assert liveness.json()["alive"] is True
 
     report = app_client.get("/v1/agent/report")
     assert report.status_code == 200
@@ -81,7 +91,8 @@ def test_read_only_observability_is_available_to_an_operator(app_client) -> None
 
     markdown = app_client.get("/v1/agent/report", params={"fmt": "markdown"})
     assert "Overnight report" in markdown.text
-    assert "NOT ALIVE" in markdown.text
+    assert "**Watcher:** alive" in markdown.text
+    assert "NOT ALIVE" not in markdown.text
 
 
 def test_the_operator_console_is_served_and_is_read_only(app_client) -> None:
