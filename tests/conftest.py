@@ -16,6 +16,9 @@ def _isolated_state(monkeypatch, tmp_path):
     # rather than disabled for convenience.
     monkeypatch.setenv("S16_CONTROL_TOKEN", CONTROL_TOKEN)
     monkeypatch.setenv("S16_COMPLETION_TOKEN", COMPLETION_TOKEN)
+    # A developer's .env may point at a live collector; tests must remain
+    # deterministic and must not depend on external Jaeger state.
+    monkeypatch.delenv("S16_OTEL_EXPORTER_ENDPOINT", raising=False)
     (tmp_path / "sandbox").mkdir()
 
 
