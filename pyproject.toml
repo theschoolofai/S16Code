@@ -19,6 +19,11 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.27",
     "ddgs>=9,<10",
     "networkx>=3.6,<4",
+    # zoneinfo reads the operating system's IANA database. Windows ships none, so
+    # without this every `current_datetime` call with a real zone raises. Declared
+    # unconditionally rather than behind a sys_platform marker so a lockfile
+    # resolves identically on every platform.
+    "tzdata>=2025.1",
 ]
 
 [dependency-groups]
