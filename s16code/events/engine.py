@@ -25,6 +25,32 @@ def _json_object(text: str) -> dict[str, Any]:
     return value
 
 
+def _run_spend_of(result: dict[str, Any]) -> float:
+    """What the run cost, read from where the runtime actually reports it.
+
+    `Runtime.run` returns spend inside `budget` — `run_budget.snapshot()`, which
+    carries `total` and `spent`. There is no `spend_usd` key; reading one recorded
+    every run at $0.00, so `daily_budget` could never bind, a run's ceiling was
+    never squeezed by what the window had left, and the morning report showed a
+    night that cost nothing.
+
+    `spend_usd` is still honoured, so any caller or fake supplying it keeps working.
+    """
+    direct = result.get("spend_usd")
+    if direct is not None:
+        try:
+            return float(direct)
+        except (TypeError, ValueError):
+            return 0.0
+    budget = result.get("budget")
+    if isinstance(budget, dict):
+        try:
+            return float(budget.get("spent") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def _spend_of(reply: dict[str, Any]) -> float:
     """What the gate itself cost. Deciding not to act is not free."""
     total = 0.0
@@ -145,7 +171,7 @@ class AutonomousEventEngine:
                         initial_evidence={"event": event.model_dump(mode="json")},
                     )
                     self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
+                                         usd=_run_spend_of(result), now=now)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision
