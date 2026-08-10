@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import httpx
 from ddgs import DDGS
@@ -224,10 +224,29 @@ def query_csv(files: list[str], sql: str) -> dict:
         connection.close()
 
 
+def _tz_database_is_available() -> bool:
+    """Whether this interpreter can resolve IANA keys at all.
+
+    `zoneinfo` reads the operating system's database. Windows ships none, so
+    without the `tzdata` package every key fails - and reporting that as an
+    unknown key blames the caller's input for a missing dependency.
+    """
+    try:
+        return bool(available_timezones())
+    except Exception:
+        return False
+
+
 def current_datetime(timezone: str = "UTC") -> dict:
     try:
         zone = ZoneInfo(timezone)
     except ZoneInfoNotFoundError as error:
+        if not _tz_database_is_available():
+            raise RuntimeError(
+                "no IANA time zone database is available to this interpreter, so no "
+                "timezone can be resolved. zoneinfo reads the operating system's "
+                "database and Windows ships none: install the `tzdata` package."
+            ) from error
         raise ValueError(f"unknown IANA timezone: {timezone}") from error
     now = datetime.now(zone)
     return {"timezone": timezone, "iso": now.isoformat(), "date": now.date().isoformat(),
