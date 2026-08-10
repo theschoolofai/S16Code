@@ -22,6 +22,7 @@ class GatewayClient:
     PASSTHROUGH = (
         "provider", "model", "max_tokens", "temperature", "reasoning",
         "auto_route", "cache_system", "response_format", "agent", "session",
+        "tenant", "project", "user",
     )
 
     def __init__(self, base_url: str | None = None, *, client: httpx.AsyncClient | None = None) -> None:

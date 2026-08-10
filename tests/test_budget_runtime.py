@@ -90,6 +90,11 @@ def test_a_budgeted_run_reports_its_ledger(budgeted_client):
     assert budget["currency"] == "USD"
     # Cost attributes to the memory scope by default: the S13 scope, now priced.
     assert budget["principal"] == "acme/proofs/reviewer"
+    for request in budgeted_client.app.state.gateway.calls:
+        assert request["tenant"] == "acme"
+        assert request["project"] == "proofs"
+        assert request["user"] == "reviewer"
+        assert request["session"] == body["run_id"]
 
 
 def test_an_explicit_principal_overrides_the_scope(budgeted_client):
