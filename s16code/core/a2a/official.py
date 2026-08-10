@@ -79,9 +79,18 @@ class OfficialA2AServicer(pb_grpc.A2AServiceServicer):
         await self._auth(context)
         task=self.core.tasks.get(request.id)
         if not task: await context.abort(grpc.StatusCode.NOT_FOUND,"task not found")
-        yield p.StreamResponse(task=_task(task))
-        while task.state not in {TaskState.COMPLETED,TaskState.FAILED,TaskState.CANCELED}:
-            await asyncio.sleep(.02); yield p.StreamResponse(task=_task(task))
+        # Decide whether to keep polling using the SAME state we just
+        # yielded, never a fresh read taken after the yield. A fresh
+        # post-yield read races however long the consumer takes to pull the
+        # next message: if state flips to terminal during that gap, a fresh
+        # check sees "already terminal" and the loop exits without ever
+        # having sent that terminal snapshot downstream.
+        while True:
+            state = task.state
+            yield p.StreamResponse(task=_task(task))
+            if state in {TaskState.COMPLETED,TaskState.FAILED,TaskState.CANCELED}:
+                break
+            await asyncio.sleep(.02)
     async def CreateTaskPushNotificationConfig(self, request, context): await self._auth(context); return self.pushes.put(request)
     async def GetTaskPushNotificationConfig(self, request, context):
         await self._auth(context)
