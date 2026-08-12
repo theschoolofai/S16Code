@@ -116,36 +116,23 @@ class AutonomyGovernor:
     # ------------------------------------------------------------------- doing
 
     def admit_run(self, subscription: Subscription, *, now: datetime | None = None) -> Verdict:
-        """May a relevant decision actually become a run?"""
+        """May a relevant decision actually become a run?
+
+        Admission reserves the run slot (and daily-budget remainder) under the
+        store lock so concurrent events cannot all pass the same ceiling.
+        """
         moment = now or datetime.now(UTC)
         day = _day(moment)
-
-        if subscription.max_runs_per_day is not None:
-            runs = self.store.window_count(subscription.id, day, kind="run")
-            if runs >= subscription.max_runs_per_day:
-                return Verdict(
-                    False,
-                    f"daily run ceiling reached: {runs} of {subscription.max_runs_per_day}",
-                    "max_runs_per_day",
-                    {"runs": runs, "limit": subscription.max_runs_per_day},
-                )
-
-        if subscription.daily_budget is not None:
-            spent = self.store.window_spend(subscription.id, day, kind="run")
-            if spent >= subscription.daily_budget:
-                return Verdict(
-                    False,
-                    f"daily budget exhausted: ${spent:.8f} of ${subscription.daily_budget:.8f}",
-                    "daily_budget",
-                    {"spent_usd": spent, "limit_usd": subscription.daily_budget},
-                )
-            # Hand the run the smaller of its per-run ceiling and what remains
-            # in the window, so one run cannot consume the whole day.
-            remaining = subscription.daily_budget - spent
-            per_run = subscription.budget if subscription.budget is not None else remaining
-            return Verdict(True, "", "", {"effective_budget": min(per_run, remaining)})
-
-        return ADMITTED
+        admitted, reason, control, detail = self.store.window_try_admit_run(
+            subscription.id,
+            day,
+            max_runs=subscription.max_runs_per_day,
+            daily_budget=subscription.daily_budget,
+            per_run_budget=subscription.budget,
+        )
+        if not admitted:
+            return Verdict(False, reason, control, detail)
+        return Verdict(True, "", "", detail)
 
     # ----------------------------------------------------------------- ledger
 
@@ -153,6 +140,16 @@ class AutonomyGovernor:
                now: datetime | None = None) -> None:
         self.store.window_record(subscription_id, _day(now or datetime.now(UTC)),
                                  kind=kind, usd=usd)
+
+    def settle_run(self, subscription_id: str, *, reserved_usd: float, actual_usd: float,
+                   now: datetime | None = None) -> None:
+        """Finish a reserved run: keep the count, correct window spend to actual."""
+        self.store.window_settle_run(
+            subscription_id,
+            _day(now or datetime.now(UTC)),
+            reserved_usd=reserved_usd,
+            actual_usd=actual_usd,
+        )
 
     def snapshot(self, subscription: Subscription, *, now: datetime | None = None) -> dict[str, Any]:
         """What an operator needs to see: how much of each bound is left."""

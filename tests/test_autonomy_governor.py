@@ -172,6 +172,33 @@ async def test_a_daily_run_ceiling_bounds_an_agent_that_starts_its_own_runs(tmp_
     assert len(refusals) == 3
 
 
+async def test_daily_run_ceiling_holds_under_concurrent_events(tmp_path) -> None:
+    """Admit-then-record after the run must not let overlapping events share one slot."""
+    import asyncio
+
+    store = EventStore(tmp_path)
+    runtime = _Runtime()
+
+    class SlowRuntime(_Runtime):
+        async def run(self, *, prompt: str, **kwargs: object) -> dict[str, object]:
+            await asyncio.sleep(0.05)
+            return await super().run(prompt=prompt, **kwargs)
+
+    runtime = SlowRuntime()
+    engine = AutonomousEventEngine(store, runtime)
+    store.put_subscription(_subscription(max_runs_per_day=1))
+    llm = _relevance_llm()
+
+    outcomes = await asyncio.gather(
+        *(engine.process(_event(id=f"race-{index}"), llm=llm) for index in range(4))
+    )
+
+    assert len(runtime.runs) == 1
+    refused = [item for item in store.refusals() if item["control"] == "max_runs_per_day"]
+    assert len(refused) == 3
+    assert sum(1 for item in outcomes if item.get("accepted")) >= 1
+
+
 async def test_a_daily_budget_caps_the_window_and_shrinks_the_last_run(tmp_path) -> None:
     store = EventStore(tmp_path)
     runtime = _Runtime(spend=0.004)
