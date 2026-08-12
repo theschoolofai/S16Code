@@ -134,18 +134,31 @@ class AutonomousEventEngine:
                         self.store.add_decision(event.source, event.id, decision)
                         return decision
                     budget = admit.detail.get("effective_budget", subscription.budget)
-                    result = await self.runtime.run(
-                        prompt=goal,
-                        scope=MemoryScope(subscription.tenant_id, subscription.project_id,
-                                          subscription.user_id, subscription.agent_id),
-                        llm=llm, source_uri=f"event://{event.source}/{event.id}",
-                        source_author=event.source,
-                        allowed_side_effects=set(subscription.allowed_side_effects),
-                        budget=budget, transport=transport,
-                        initial_evidence={"event": event.model_dump(mode="json")},
+                    reserved_usd = float(admit.detail.get("reserved_usd") or 0.0)
+                    try:
+                        result = await self.runtime.run(
+                            prompt=goal,
+                            scope=MemoryScope(subscription.tenant_id, subscription.project_id,
+                                              subscription.user_id, subscription.agent_id),
+                            llm=llm, source_uri=f"event://{event.source}/{event.id}",
+                            source_author=event.source,
+                            allowed_side_effects=set(subscription.allowed_side_effects),
+                            budget=budget, transport=transport,
+                            initial_evidence={"event": event.model_dump(mode="json")},
+                        )
+                        actual_usd = float(result.get("spend_usd") or 0.0)
+                    except Exception:
+                        # Slot stays consumed; refund any reserved daily budget.
+                        self.governor.settle_run(
+                            subscription.id, reserved_usd=reserved_usd, actual_usd=0.0, now=now,
+                        )
+                        raise
+                    self.governor.settle_run(
+                        subscription.id,
+                        reserved_usd=reserved_usd,
+                        actual_usd=actual_usd,
+                        now=now,
                     )
-                    self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision

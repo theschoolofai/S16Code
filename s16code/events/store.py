@@ -207,6 +207,81 @@ class EventStore:
             entry["usd"] = round(entry["usd"] + max(0.0, float(usd)), 12)
             self._save(state)
 
+    def window_try_admit_run(
+        self,
+        subscription_id: str,
+        day: str,
+        *,
+        max_runs: int | None,
+        daily_budget: float | None,
+        per_run_budget: float | None,
+    ) -> tuple[bool, str, str, dict]:
+        """Atomically check run ceilings and reserve one run slot.
+
+        Concurrent admit-then-record left every waiter seeing count=0. Reserving
+        under the store lock makes ``max_runs_per_day`` and ``daily_budget`` hold
+        across overlapping events. When a daily budget applies, the effective
+        per-run remainder is reserved against window usd and later settled to
+        actual spend.
+        """
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
+            entry = bucket.setdefault("run", {"count": 0, "usd": 0.0})
+            runs = int(entry["count"])
+            spent = float(entry["usd"])
+
+            if max_runs is not None and runs >= max_runs:
+                return (
+                    False,
+                    f"daily run ceiling reached: {runs} of {max_runs}",
+                    "max_runs_per_day",
+                    {"runs": runs, "limit": max_runs},
+                )
+
+            reserved_usd = 0.0
+            detail: dict = {}
+            if daily_budget is not None:
+                if spent >= daily_budget:
+                    return (
+                        False,
+                        f"daily budget exhausted: ${spent:.8f} of ${daily_budget:.8f}",
+                        "daily_budget",
+                        {"spent_usd": spent, "limit_usd": daily_budget},
+                    )
+                remaining = daily_budget - spent
+                per_run = per_run_budget if per_run_budget is not None else remaining
+                effective = min(float(per_run), float(remaining))
+                reserved_usd = effective
+                detail = {"effective_budget": effective, "reserved_usd": reserved_usd}
+            elif per_run_budget is not None:
+                detail = {"effective_budget": float(per_run_budget), "reserved_usd": 0.0}
+            else:
+                detail = {"reserved_usd": 0.0}
+
+            entry["count"] = runs + 1
+            if reserved_usd:
+                entry["usd"] = round(spent + reserved_usd, 12)
+            self._save(state)
+            return True, "", "", detail
+
+    def window_settle_run(
+        self,
+        subscription_id: str,
+        day: str,
+        *,
+        reserved_usd: float,
+        actual_usd: float,
+    ) -> None:
+        """Replace a reserved run budget with metered spend (count already reserved)."""
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
+            entry = bucket.setdefault("run", {"count": 0, "usd": 0.0})
+            delta = max(0.0, float(actual_usd)) - max(0.0, float(reserved_usd))
+            entry["usd"] = round(float(entry["usd"]) + delta, 12)
+            self._save(state)
+
     def window_count(self, subscription_id: str, day: str, *, kind: str) -> int:
         with self._lock:
             bucket = self._load()["windows"].get(f"{subscription_id}|{day}", {})
