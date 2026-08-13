@@ -179,6 +179,7 @@ async def action(body: ActionBody, request: Request):
         prompt=None, scope=None,
         llm=lambda prompt, system: request.app.state.gateway.complete(prompt, system),
         source_uri=None, source_author=None, run_id=body.run_id, resume=True,
+        transport=request.app.state.gateway,
     )
     return {"resumed": True, "node_id": body.node_id, "reason": decision.reason, "run": result}
 

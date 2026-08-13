@@ -271,3 +271,94 @@ def test_the_trace_route_serves_the_span_tree(budgeted_client):
 
 def test_the_trace_route_404s_for_an_unknown_run(budgeted_client):
     assert budgeted_client.get("/v1/agent/runs/no-such-run/trace").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# a wait is not a new run: the ceiling and spend survive resume
+# --------------------------------------------------------------------------- #
+
+class ApprovalGateway(FakeGateway):
+    """Planner parks on request_approval, then answers after the wait completes."""
+
+    async def chat(self, *, prompt, system, request=None):
+        request = dict(request or {})
+        self.calls.append(request)
+        ceiling = int(request.get("max_tokens") or self.wanted_output)
+        if "evidence-readiness critic" in system:
+            text = json.dumps({"ready": True, "missing": [], "reason": "complete"})
+            used_output = min(80, ceiling)
+        elif "decision core of a live-graph agent" in system:
+            context = json.loads(prompt)
+            nodes = context["graph"]["nodes"]
+            if not nodes:
+                text = json.dumps({
+                    "add": [{"id": "approve", "capability": "request_approval",
+                             "arguments": {"question": "Send this outbound message?",
+                                           "choices": ["yes", "no"]},
+                             "depends_on": []}],
+                    "cancel": [], "finish": False,
+                    "reason": "outbound send needs a human",
+                })
+            else:
+                text = json.dumps({
+                    "add": [{"id": "answer", "capability": "answer_with_evidence",
+                             "arguments": {"query": context["goal"]},
+                             "depends_on": ["approve"]}],
+                    "cancel": [], "finish": False,
+                    "reason": "approval arrived",
+                })
+            used_output = min(120, ceiling)
+        else:
+            text = "approved; the same run finished"
+            used_output = min(self.wanted_output, ceiling)
+        return {"text": text, "provider": "prov_1",
+                "model": request.get("model", "unknown"),
+                "input_tokens": len(prompt or "") // 4 + len(system or "") // 4,
+                "output_tokens": used_output,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "latency_ms": 12}
+
+
+def test_resume_keeps_the_run_budget_and_prior_spend(budgeted_client):
+    """HTTP resume used to pass budget=None, so BudgetedGateway was never rebuilt.
+
+    A run that entered waiting under a ceiling could continue unmetered. The
+    control has to hold across the wait: same total, spend that only goes up.
+    """
+    budgeted_client.app.state.gateway = ApprovalGateway()
+    first = budgeted_client.post("/v1/agent/runs", json={
+        **SCOPE, "prompt": "Draft an outbound note and ask before sending.",
+        "budget": 0.05, "allowed_side_effects": ["request_approval"],
+    })
+    assert first.status_code == 200, first.text
+    parked = first.json()
+    assert parked["status"] == "waiting"
+    assert parked["budget"] is not None, "the parked run must be under a ceiling"
+    assert parked["budget"]["total"] == 0.05
+    spent_before = parked["budget"]["spent"]
+    assert spent_before > 0
+    run_id = parked["run_id"]
+
+    waiting = [node for node in parked["graph"]["nodes"].values() if node["state"] == "waiting"]
+    assert len(waiting) == 1
+    wait = waiting[0]["wait"]
+    completion = budgeted_client.app.state.runtime.graph.complete_waiting(
+        wait["handle"], wait["event_type"], {"response": "yes"},
+    )
+    assert completion is not None
+
+    # The resume route does not accept a budget body. The ceiling has to come
+    # back from the durable graph context, the way a killed-and-restarted
+    # process would see it.
+    resumed = budgeted_client.post(f"/v1/agent/runs/{run_id}/resume")
+    assert resumed.status_code == 200, resumed.text
+    body = resumed.json()
+    assert body["run_id"] == run_id
+    assert body["status"] == "completed"
+    assert body["budget"] is not None, "resume must not drop the run ceiling"
+    assert body["budget"]["total"] == 0.05
+    assert body["budget"]["spent"] >= spent_before
+    assert body["budget"]["spent"] <= body["budget"]["total"]
+    assert body["budget"]["calls"] >= parked["budget"]["calls"]
+    persisted = budgeted_client.app.state.runtime.graph.context(run_id)
+    assert persisted["budget"] == 0.05
+    assert float(persisted["budget_spent"]) == pytest.approx(body["budget"]["spent"])
