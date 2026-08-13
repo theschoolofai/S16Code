@@ -88,6 +88,24 @@ def test_read_only_observability_is_available_to_an_operator(app_client) -> None
     assert "NOT ALIVE" in markdown.text
 
 
+def test_the_subscription_read_path_is_gated_like_its_write_path(
+    app_client, monkeypatch
+) -> None:
+    """GET /subscriptions returns the authority objects (side effects, budgets,
+    instructions). Reading them is as sensitive as writing them, so the read
+    path must fail closed exactly like PUT /subscriptions/{id} does.
+    """
+    monkeypatch.delenv("S16_CONTROL_TOKEN", raising=False)
+    unset = app_client.get("/v1/agent/subscriptions")
+    assert unset.status_code == 503
+    assert "S16_CONTROL_TOKEN" in unset.json()["detail"]
+
+    monkeypatch.setenv("S16_CONTROL_TOKEN", conftest.CONTROL_TOKEN)
+    wrong = app_client.get("/v1/agent/subscriptions",
+                           headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
+
+
 def test_the_action_route_is_a_write_path_and_fails_closed(app_client, monkeypatch) -> None:
     """POST /v1/action resumes a parked node and re-runs it, spending money.
 

@@ -26,7 +26,7 @@ async def put_subscription(subscription_id: str, body: Subscription, request: Re
     return {"accepted": True, "subscription": stored}
 
 
-@router.get("/subscriptions")
+@router.get("/subscriptions", dependencies=[Depends(require_control)])
 async def subscriptions(request: Request):
     return {"subscriptions": [item.model_dump(mode="json")
                               for item in request.app.state.event_store.subscriptions()]}
