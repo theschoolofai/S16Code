@@ -84,6 +84,26 @@ def test_read_only_observability_is_available_to_an_operator(app_client) -> None
     assert "NOT ALIVE" in markdown.text
 
 
+def test_the_action_route_is_a_write_path_and_fails_closed(app_client, monkeypatch) -> None:
+    """POST /v1/action resumes a parked node and re-runs it, spending money.
+
+    It is a control-plane write path (the same resume the protected
+    /v1/agent/completions and /v1/agent/runs/{id}/resume routes perform), so it
+    must fail closed like every other write path.
+    """
+    body = {"run_id": "run-x", "node_id": "n", "action": "approve"}
+
+    monkeypatch.delenv("S16_CONTROL_TOKEN", raising=False)
+    unset = app_client.post("/v1/action", json=body)
+    assert unset.status_code == 503
+    assert "S16_CONTROL_TOKEN" in unset.json()["detail"]
+
+    monkeypatch.setenv("S16_CONTROL_TOKEN", conftest.CONTROL_TOKEN)
+    wrong = app_client.post("/v1/action", json=body,
+                            headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
+
+
 def test_the_operator_console_is_served_and_is_read_only(app_client) -> None:
     """§9 promises an operations page. It has to exist, and it has to be inert.
 
