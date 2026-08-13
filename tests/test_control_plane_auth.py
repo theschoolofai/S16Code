@@ -3,7 +3,11 @@
 A subscription carries `allowed_side_effects` and a budget: it is the object the
 whole session's security argument rests on. An unauthenticated write there hands
 an anonymous caller the authority to decide what the agent may do and how much it
-may spend. Starting a run and resuming a parked node both spend money too.
+may spend. Starting a run and resuming a parked node both spend money too. So do
+HITL approve/reject (`POST /v1/action`) and writing tenant memory
+(`POST /v1/agent/facts`, `/documents`). Cross-tenant recall
+(`POST /v1/agent/memory/search`) is a read, but the tenant lives in the JSON
+body, so it is gated the same way.
 
 The shape being guarded against is `if expected and not compare_digest(...)`,
 which reads like a check and behaves like an open door whenever the variable is
@@ -20,6 +24,10 @@ WRITE_PATHS = [
                                   "occurred_at": "2026-08-05T09:00:00Z"}),
     ("post", "/v1/agent/runs", {"prompt": "hello", "tenant_id": "t"}),
     ("post", "/v1/agent/runs/run-1/resume", {}),
+    ("post", "/v1/action", {"run_id": "run-1", "node_id": "gate", "action": "approve"}),
+    ("post", "/v1/agent/facts", {"tenant_id": "t", "text": "injected", "source_uri": "attacker://x"}),
+    ("post", "/v1/agent/documents", {"tenant_id": "t", "text": "injected", "source_uri": "attacker://x"}),
+    ("post", "/v1/agent/memory/search", {"tenant_id": "t", "query": "secrets"}),
 ]
 
 
