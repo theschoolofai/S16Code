@@ -155,6 +155,7 @@ class AgentRuntime:
         run behaves exactly as it did before economics existed.
         """
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
+        prior_spent = 0.0
         if resume:
             context = self.graph.context(run_id)
             prompt = str(context["prompt"])
@@ -163,6 +164,14 @@ class AgentRuntime:
             allowed_side_effects = set(context.get("allowed_side_effects", []))
             source_uri, source_author, inbound_id = context["source_uri"], context["source_author"], context.get("inbound_id")
             initial_evidence = context.get("initial_evidence") or {}
+            # A wait is not a new run. The ceiling and spend that held before
+            # the park must come back with the graph, even if the caller (HTTP
+            # resume, channel approval, job callback) passes budget=None.
+            if budget is None and context.get("budget") is not None:
+                budget = float(context["budget"])
+            if principal is None and context.get("principal"):
+                principal = str(context["principal"])
+            prior_spent = float(context.get("budget_spent") or 0.0)
         else:
             if prompt is None or scope is None or source_uri is None or source_author is None:
                 raise ValueError("new runs require prompt, scope, and source identity")
@@ -170,14 +179,23 @@ class AgentRuntime:
             inbound = self.memory.write(MemoryRecord(MemoryKind.EPISODE, scope, prompt, [user_source],
                                                       Principal("gateway", "gateway"), metadata={"run_id": run_id}))
             inbound_id = inbound.id
-            self.graph.start(run_id, context={"prompt": prompt, "scope": {"tenant_id": scope.tenant_id,
-                                              "project_id": scope.project_id, "user_id": scope.user_id,
-                                              "agent_id": scope.agent_id, "run_id": scope.run_id},
-                                              "source_uri": source_uri, "source_author": source_author,
-                                              "inbound_id": inbound_id, "respond_as": respond_as,
-                                              "allowed_side_effects": sorted(allowed_side_effects or ()),
-                                              "initial_evidence": initial_evidence or {}})
         assert prompt is not None and scope is not None and source_uri is not None and source_author is not None
+        who = principal or principal_for(scope)
+        if not resume:
+            start_context: dict[str, Any] = {
+                "prompt": prompt,
+                "scope": {"tenant_id": scope.tenant_id, "project_id": scope.project_id,
+                          "user_id": scope.user_id, "agent_id": scope.agent_id, "run_id": scope.run_id},
+                "source_uri": source_uri, "source_author": source_author,
+                "inbound_id": inbound_id, "respond_as": respond_as,
+                "allowed_side_effects": sorted(allowed_side_effects or ()),
+                "initial_evidence": initial_evidence or {},
+                "principal": who,
+            }
+            if budget is not None:
+                start_context["budget"] = float(budget)
+                start_context["budget_spent"] = 0.0
+            self.graph.start(run_id, context=start_context)
         user_source = SourceRef(source_uri, source_author, excerpt=prompt)
 
         runtime = self
@@ -189,12 +207,15 @@ class AgentRuntime:
         economics_config: EconomicsConfig | None = None
         run_budget: RunBudget | None = None
         controller: BudgetedGateway | None = None
-        who = principal or principal_for(scope)
         if budget is not None:
             if transport is None:
                 raise ValueError("a budgeted run needs a gateway transport to meter")
             economics_config = economics or EconomicsConfig.load()
             run_budget = economics_config.budget(principal=who, amount=float(budget), run_id=run_id)
+            if prior_spent > 0:
+                # Restoring only the original ceiling with spend reset to zero
+                # would give the run a second full allowance after every wait.
+                run_budget.spent = prior_spent
             controller = BudgetedGateway(
                 transport, budget=run_budget, policy=economics_config.policy(),
                 pricing=economics_config.pricing, ladder=economics_config.ladder,
@@ -942,6 +963,12 @@ class AgentRuntime:
                                   for name, worker in skills.items()},
             max_workers=int(os.getenv("S16_MAX_WORKERS", "4")),
         ).run(run_id, resume=resume)
+        if run_budget is not None:
+            self.graph.update_context(run_id, {
+                "budget": run_budget.total,
+                "principal": who,
+                "budget_spent": run_budget.spent,
+            })
         snapshot = self.graph.snapshot(run_id)
         terminal_skills = registry.terminal_skills(respond_as)
         terminal_nodes = [node for node in snapshot.nodes.values() if node["skill"] in terminal_skills]

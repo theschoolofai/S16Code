@@ -147,6 +147,16 @@ class GraphStore:
         with self._lock:
             return dict(self._load(run_id)["graph"].graph.get("context", {}))
 
+    def update_context(self, run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """Merge durable run context (budget, principal, spend) across a wait."""
+        with self._lock:
+            state = self._load(run_id)
+            context = dict(state["graph"].graph.get("context") or {})
+            context.update(patch)
+            state["graph"].graph["context"] = context
+            self._save(state)
+            return dict(context)
+
     def resume(self, run_id: str) -> None:
         with self._lock:
             state = self._load(run_id)

@@ -298,7 +298,8 @@ async def resume(run_id: str, request: Request):
     try:
         return await runtime.run(prompt=None, scope=None,
                                  llm=lambda prompt, system: gateway_text_llm(request.app, prompt, system),
-                                 source_uri=None, source_author=None, run_id=run_id, resume=True)
+                                 source_uri=None, source_author=None, run_id=run_id, resume=True,
+                                 transport=request.app.state.gateway)
     except KeyError:
         raise HTTPException(404, "run not found") from None
     except RuntimeError as error:
