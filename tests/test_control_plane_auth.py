@@ -20,6 +20,10 @@ WRITE_PATHS = [
                                   "occurred_at": "2026-08-05T09:00:00Z"}),
     ("post", "/v1/agent/runs", {"prompt": "hello", "tenant_id": "t"}),
     ("post", "/v1/agent/runs/run-1/resume", {}),
+    # Memory writes are write paths too: they inject evidence the agent will
+    # later treat as authorised. The README promises every write path is gated.
+    ("post", "/v1/agent/facts", {"tenant_id": "t", "text": "x", "source_uri": "u"}),
+    ("post", "/v1/agent/documents", {"tenant_id": "t", "text": "x", "source_uri": "u"}),
 ]
 
 
