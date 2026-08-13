@@ -43,7 +43,18 @@ class GatewayClient:
             # gateway's own provider order (which may put a heavy model first).
             "provider": os.getenv("S16_GATEWAY_PROVIDER", "gemini"),
         }
-        for field, value in (request or {}).items():
+        request = dict(request or {})
+        pinned = str(payload["provider"] or "").strip()
+        requested_provider = str(request.get("provider") or "").strip()
+        # A budgeted tier may name github/groq/openai. That is the ladder's
+        # preference, not an override of the operator pin. Honouring it on a
+        # machine that only has Gemini keys turns every budgeted run (wait,
+        # resume, unattended triage) into a hard gateway 4xx, while the same
+        # prompt without a ceiling still works.
+        if pinned and requested_provider and requested_provider != pinned:
+            request.pop("provider", None)
+            request.pop("model", None)
+        for field, value in request.items():
             if field in self.PASSTHROUGH:
                 payload[field] = value
         return payload

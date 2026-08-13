@@ -83,6 +83,54 @@ async def test_gateway_can_fall_back_without_exposing_credentials(monkeypatch):
     assert result["text"] == "fallback"
 
 
+@pytest.mark.asyncio
+async def test_operator_provider_pin_beats_a_tier_that_names_another_provider(monkeypatch):
+    """Budgeted runs send the ladder's request body, including `provider: github`
+    on the frontier rung. That field used to overwrite S16_GATEWAY_PROVIDER, so a
+    Gemini-only gateway failed every wait/resume and unattended run while the
+    same prompt without a budget still worked.
+    """
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"text": "ok", "provider": "gemini_1", "model": "gemini"})
+
+    monkeypatch.setenv("S16_GATEWAY_PROVIDER", "gemini")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await GatewayClient("http://gateway", client=http).chat(
+            prompt="park this run",
+            system="ask first",
+            request={"provider": "github", "model": "openai/gpt-4.1", "max_tokens": 4096},
+        )
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["provider"] == "gemini"
+    assert payload.get("model") != "openai/gpt-4.1"
+    assert payload["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_a_tier_on_the_pinned_provider_still_chooses_its_model(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"text": "ok", "provider": "gemini_1", "model": "gemini-3.1-flash-lite"})
+
+    monkeypatch.setenv("S16_GATEWAY_PROVIDER", "gemini")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await GatewayClient("http://gateway", client=http).chat(
+            prompt="goal",
+            system="system",
+            request={"provider": "gemini", "model": "gemini-3.1-flash-lite", "max_tokens": 1024},
+        )
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["provider"] == "gemini"
+    assert payload["model"] == "gemini-3.1-flash-lite"
+
+
 def test_s16code_does_not_reimplement_gateway_routes(app_client):
     assert app_client.post("/v1/chat", json={}).status_code == 404
     assert app_client.get("/v1/providers").status_code == 404
