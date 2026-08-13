@@ -24,6 +24,25 @@ def test_calculate_supports_useful_arithmetic_without_code_execution():
         calculate("2 ** 100")
 
 
+def test_fetch_url_refuses_private_and_loopback_targets():
+    from s16code.tools import assert_fetchable_url
+
+    assert_fetchable_url("https://1.1.1.1/")
+    with pytest.raises(ValueError, match="http"):
+        assert_fetchable_url("file:///etc/passwd")
+    for hostile in (
+        "http://127.0.0.1/",
+        "http://127.0.0.1:8111/v1/budget",
+        "http://localhost/",
+        "http://10.0.0.1/",
+        "http://192.168.1.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/",
+    ):
+        with pytest.raises(ValueError, match="private or loopback"):
+            assert_fetchable_url(hostile)
+
+
 def test_write_and_hash_stay_inside_sandbox(monkeypatch, tmp_path):
     monkeypatch.setenv("S16_SANDBOX_ROOT", str(tmp_path))
     written = write_text_file("reports/result.txt", "verified output")
