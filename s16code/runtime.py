@@ -963,6 +963,11 @@ class AgentRuntime:
                 "edges": snapshot.edges}, "trace": {"planner": getattr(planner, "last_selection", {"mode": "deterministic"}),
                 "agents": trace}, "events": [event.__dict__ for event in self.graph.events(run_id)],
                 "principal": who,
+                # What this run cost, at the top level. The windowed governor in
+                # s16code.events meters against this, and a number reachable only
+                # by digging into a nested snapshot is a number a caller forgets
+                # to read.
+                "spend_usd": run_budget.spent if run_budget is not None else 0.0,
                 "budget": run_budget.snapshot() if run_budget is not None else None,
                 "economics": economics_config.describe() if economics_config is not None else None,
                 "allocations": list(getattr(planner, "allocations", []))}

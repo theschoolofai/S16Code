@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import os
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any, Awaitable, Callable
 
 from s16code.core.memory import MemoryScope
+from s16code.economics.pricing import Pricing
 
 from .governor import AutonomyGovernor
 from .models import EventEnvelope, Subscription
@@ -25,17 +28,84 @@ def _json_object(text: str) -> dict[str, Any]:
     return value
 
 
-def _spend_of(reply: dict[str, Any]) -> float:
-    """What the gate itself cost. Deciding not to act is not free."""
+def _spend_of(reply: dict[str, Any], pricing: Pricing | None = None) -> float:
+    """What the gate itself cost. Deciding not to act is not free.
+
+    Two shapes reach here. A reply that came through ``BudgetedGateway`` carries
+    per-call meter records under ``metered_calls``; the field they price under is
+    ``cost`` (``Charge.as_dict``), so that name has to be read or the controller's
+    own records total zero. A reply that came straight off ``GatewayClient``
+    carries no meter at all — only the token counts — so it is priced here
+    against the same table the rest of the system bills with. Returning 0.0
+    because nobody attached a meter is how ``daily_triage_budget`` silently stops
+    being a ceiling.
+    """
+    metered = False
     total = 0.0
     for call in reply.get("metered_calls", []) or []:
         if not isinstance(call, dict):
             continue
+        for key in ("cost_usd", "usd", "cost"):
+            if key in call:
+                try:
+                    total += float(call[key] or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                metered = True
+                break
+    if metered:
+        return total
+    if pricing is None:
+        return 0.0
+    return pricing.cost(
+        reply.get("model"),
+        input_tokens=int(reply.get("input_tokens") or 0),
+        output_tokens=int(reply.get("output_tokens") or 0),
+        cache_read_tokens=int(reply.get("cache_read_input_tokens") or 0),
+        cache_write_tokens=int(reply.get("cache_creation_input_tokens") or 0),
+    )
+
+
+def _run_spend_of(result: dict[str, Any]) -> float:
+    """What a dispatched run cost, from whichever field the runtime reported.
+
+    ``AgentRuntime.run`` publishes ``spend_usd`` directly; it also returns the
+    whole ``RunBudget.snapshot()``, whose ``spent`` is the same number. Reading
+    only one of them is what made ``daily_budget`` unenforceable: the engine
+    asked for a key no production runtime emitted, got ``None`` every time, and
+    recorded a window spend of zero forever.
+    """
+    for candidate in (result.get("spend_usd"), (result.get("budget") or {}).get("spent")):
+        if candidate is None:
+            continue
         try:
-            total += float(call.get("cost_usd") or call.get("usd") or 0.0)
+            return float(candidate)
         except (TypeError, ValueError):
             continue
-    return total
+    return 0.0
+
+
+@lru_cache(maxsize=4)
+def _pricing_for(config_dir: str | None) -> Pricing | None:
+    """The price table for one config directory, read once.
+
+    Keyed on the directory rather than cached outright, because ``S16_CONFIG_DIR``
+    picks the table and a cache that ignored it would serve one profile's prices
+    to another.
+    """
+    try:
+        from s16code.economics.config import EconomicsConfig
+
+        return EconomicsConfig.load(config_dir).pricing
+    except Exception:  # pragma: no cover - config ships with every checkout
+        # A price table we cannot read must not stop the agent noticing events.
+        # It costs the dollar ceilings, not the loop, and _spend_of falls back
+        # to whatever meter the reply carried.
+        return None
+
+
+def _default_pricing() -> Pricing | None:
+    return _pricing_for(os.getenv("S16_CONFIG_DIR") or None)
 
 
 class AutonomousEventEngine:
@@ -46,10 +116,15 @@ class AutonomousEventEngine:
     """
 
     def __init__(self, store: EventStore, runtime: Any, *, max_concurrent: int = 4,
-                 governor: AutonomyGovernor | None = None) -> None:
+                 governor: AutonomyGovernor | None = None,
+                 pricing: Pricing | None = None) -> None:
         self.store, self.runtime = store, runtime
         self.max_concurrent = max_concurrent
         self.governor = governor or AutonomyGovernor(store)
+        # The gate is a model call on every matching event. Pricing it needs the
+        # same table the runs are billed against, or "cost of watching" is a
+        # number nobody computes and daily_triage_budget bounds nothing.
+        self.pricing = pricing if pricing is not None else _default_pricing()
         # One semaphore for the engine, not one per call. Constructing it inside
         # process() bounded fan-out across subscriptions for a single event and
         # bounded nothing at all across concurrent events, which is exactly the
@@ -110,7 +185,7 @@ class AutonomousEventEngine:
                 )
                 reply = await llm(json.dumps({"subscription": subscription.model_dump(mode="json"),
                                               "event": event.model_dump(mode="json")}), system)
-                triage_cost = _spend_of(reply)
+                triage_cost = _spend_of(reply, self.pricing)
                 self.governor.record(subscription.id, kind="triage", usd=triage_cost, now=now)
 
                 raw = _json_object(str(reply.get("text", "")))
@@ -145,7 +220,7 @@ class AutonomousEventEngine:
                         initial_evidence={"event": event.model_dump(mode="json")},
                     )
                     self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
+                                         usd=_run_spend_of(result), now=now)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision

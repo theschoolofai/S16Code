@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from s16code.economics.budget import RunBudget
+from s16code.economics.config import EconomicsConfig
 from s16code.events import (
     AutonomousEventEngine,
     AutonomyGovernor,
@@ -41,7 +43,14 @@ def _subscription(**changes) -> Subscription:
 
 
 class _Runtime:
-    """A runtime that records whether it was ever asked to do work."""
+    """A runtime that records whether it was ever asked to do work.
+
+    The returned dict is built from a real :class:`RunBudget` snapshot rather
+    than hand-written, because a double that invents its own shape cannot fail
+    when the seam it stands in for drifts. The engine has to be able to read
+    what ``AgentRuntime.run`` genuinely emits (runtime.py, the ``budget`` key),
+    not what a test wishes it emitted.
+    """
 
     def __init__(self, spend: float = 0.001) -> None:
         self.runs: list[str] = []
@@ -49,7 +58,10 @@ class _Runtime:
 
     async def run(self, *, prompt: str, **_: object) -> dict[str, object]:
         self.runs.append(prompt)
-        return {"run_id": f"run-{len(self.runs)}", "status": "completed", "spend_usd": self.spend}
+        budget = RunBudget(total=max(self.spend, 0.01), run_id=f"run-{len(self.runs)}")
+        budget.spent = self.spend
+        return {"run_id": f"run-{len(self.runs)}", "status": "completed", "answer": "",
+                "budget": budget.snapshot()}
 
 
 def _relevance_llm(relevant: bool = True, cost: float = 0.00002):
@@ -186,6 +198,92 @@ async def test_a_daily_budget_caps_the_window_and_shrinks_the_last_run(tmp_path)
     assert store.window_spend("watch", day, kind="run") == pytest.approx(0.012)
     assert len(runtime.runs) == 3  # the fourth is refused: the window is exhausted
     assert any(item["control"] == "daily_budget" for item in store.refusals())
+
+
+async def test_the_daily_budget_holds_when_the_runtime_reports_only_a_snapshot(tmp_path) -> None:
+    """A window ceiling must read the field the runtime actually publishes.
+
+    ``AgentRuntime.run`` returns the whole ``RunBudget.snapshot()``. A governor
+    that meters some other key records ``$0.00`` for every run, and then
+    ``spent >= daily_budget`` is a comparison that can never be true no matter
+    how much the agent spends.
+    """
+    store = EventStore(tmp_path)
+
+    class _SnapshotOnlyRuntime:
+        def __init__(self) -> None:
+            self.runs: list[str] = []
+
+        async def run(self, *, prompt: str, **_: object) -> dict[str, object]:
+            self.runs.append(prompt)
+            budget = RunBudget(total=0.01, run_id=f"run-{len(self.runs)}")
+            budget.spent = 0.004
+            return {"run_id": budget.run_id, "status": "completed",
+                    "budget": budget.snapshot()}
+
+    runtime = _SnapshotOnlyRuntime()
+    engine = AutonomousEventEngine(store, runtime)
+    store.put_subscription(_subscription(budget=0.01, daily_budget=0.01))
+
+    for index in range(6):
+        await engine.process(_event(id=f"snap-{index}"), llm=_relevance_llm())
+
+    day = datetime.now(UTC).date().isoformat()
+    assert store.window_spend("watch", day, kind="run") == pytest.approx(0.012)
+    assert len(runtime.runs) == 3
+    assert any(item["control"] == "daily_budget" for item in store.refusals())
+
+
+# --------------------------------------------------------- the cost of watching
+
+
+async def test_the_triage_ceiling_holds_when_the_gateway_reports_only_tokens(tmp_path) -> None:
+    """Being awake is billed even when nobody attached a meter to the reply.
+
+    ``GatewayClient.complete`` — the callable the HTTP event route hands the
+    engine — returns text, provider, model and token counts. It carries no
+    ``metered_calls``. If that shape prices at zero then ``daily_triage_budget``
+    never trips, and the one control the session says must survive a
+    denial-of-wallet attack is the unmetered surface the attack aims at.
+    """
+    store = EventStore(tmp_path)
+    engine = AutonomousEventEngine(store, _Runtime())
+    # gemini-3.1-flash-lite is $0.25/$1.50 per Mtok in config/pricing.yaml, so
+    # each gate call below prices at $0.0013 and the fifth exhausts the ceiling.
+    store.put_subscription(_subscription(daily_triage_budget=0.005))
+
+    calls: list[str] = []
+
+    async def gateway_shaped(prompt: str, system: str):  # noqa: ARG001
+        calls.append(prompt)
+        return {"text": json.dumps({"relevant": False, "reason": "routine", "goal": ""}),
+                "provider": "gemini", "model": "gemini-3.1-flash-lite",
+                "input_tokens": 4_000, "output_tokens": 200}
+
+    for index in range(40):
+        await engine.process(_event(id=f"awake-{index}"), llm=gateway_shaped)
+
+    day = datetime.now(UTC).date().isoformat()
+    assert store.window_spend("watch", day, kind="triage") > 0.0
+    assert len(calls) < 40, "the triage ceiling never stopped a single gate call"
+    assert any(item["control"] == "daily_triage_budget" for item in store.refusals())
+
+
+def test_a_controller_meter_record_is_priced_under_its_own_key() -> None:
+    """``BudgetedGateway`` writes ``Charge.as_dict()``, whose money field is
+    ``cost``. Reading only ``cost_usd``/``usd`` totals a real meter at zero."""
+    from s16code.events.engine import _spend_of
+
+    assert _spend_of({"metered_calls": [{"cost": 0.0025}]}) == pytest.approx(0.0025)
+    assert _spend_of({"metered_calls": [{"cost_usd": 0.0025}]}) == pytest.approx(0.0025)
+
+
+def test_the_shipped_price_table_prices_a_gateway_reply() -> None:
+    """The engine's default pricing has to be able to price a real reply, or the
+    fallback above is decorative."""
+    pricing = EconomicsConfig.load().pricing
+
+    assert pricing.cost("gemini-3.1-flash-lite", input_tokens=4_000, output_tokens=200) > 0.0
 
 
 # -------------------------------------------------------------------- liveness
