@@ -163,15 +163,33 @@ def _waiting_channel_approval(request: Request, body: ChannelMessageBody):
     return None
 
 
+_NEGATIVE_APPROVAL_CHOICES = frozenset({"no", "n", "reject", "deny", "cancel"})
+
+
+def _channel_approval_choice(text: str, wait: dict[str, Any]) -> str | None:
+    """Return the matched listed choice, or None if this message is not an answer."""
+    answer = text.casefold().strip()
+    if not answer:
+        return None
+    choices = [str(choice).casefold().strip() for choice in (wait.get("choices") or []) if str(choice).strip()]
+    if not choices:
+        return answer
+    return answer if answer in choices else None
+
+
 async def _resume_channel_approval(request: Request, body: ChannelMessageBody):
     pending = _waiting_channel_approval(request, body)
     if pending is None:
         return None
     run_id, wait = pending
+    matched = _channel_approval_choice(body.text or "", wait)
+    if matched is None:
+        return None
     completion = request.app.state.runtime.graph.complete_waiting(
         wait["handle"], "approval.received",
         {"response": body.text or "", "channel": body.channel,
          "channel_user_id": body.channel_user_id, "thread_id": body.thread_id},
+        success=matched not in _NEGATIVE_APPROVAL_CHOICES,
     )
     if completion is None:
         return None
