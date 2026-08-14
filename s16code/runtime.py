@@ -15,6 +15,8 @@ from collections.abc import Awaitable, Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import httpx
 
@@ -347,10 +349,15 @@ class AgentRuntime:
                              overwrite=bool(task.input.get("overwrite", False)))
 
         async def run_verify_artifact(task: TaskSpec) -> dict[str, Any]:
-            parsed = httpx.URL(task.input["uri"])
+            parsed = urlparse(task.input["uri"])
             if parsed.scheme != "file":
                 raise ValueError("verify_artifact requires a file:// URI")
-            candidate = Path(str(parsed.path)).resolve()
+            # Path.as_uri() puts a slash before the drive letter, so a file URI
+            # reads file:///C:/... and its path component is /C:/... . Handing
+            # that straight to Path() on Windows yields \C:\... which is not a
+            # valid path. url2pathname does the platform-correct conversion and
+            # percent-decodes, so it must not be pre-unquoted.
+            candidate = Path(url2pathname(parsed.path)).resolve()
             owned = (runtime.root / "artifacts" / run_id).resolve()
             if candidate == owned or owned not in candidate.parents or not candidate.is_file():
                 raise PermissionError("artifact is not a file owned by this run")
