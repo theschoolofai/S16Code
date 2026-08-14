@@ -8,6 +8,7 @@ exactly like a peaceful night.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -43,12 +44,15 @@ def _subscription(**changes) -> Subscription:
 class _Runtime:
     """A runtime that records whether it was ever asked to do work."""
 
-    def __init__(self, spend: float = 0.001) -> None:
+    def __init__(self, spend: float = 0.001, delay: float = 0.0) -> None:
         self.runs: list[str] = []
         self.spend = spend
+        self.delay = delay
 
     async def run(self, *, prompt: str, **_: object) -> dict[str, object]:
         self.runs.append(prompt)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return {"run_id": f"run-{len(self.runs)}", "status": "completed", "spend_usd": self.spend}
 
 
@@ -186,6 +190,28 @@ async def test_a_daily_budget_caps_the_window_and_shrinks_the_last_run(tmp_path)
     assert store.window_spend("watch", day, kind="run") == pytest.approx(0.012)
     assert len(runtime.runs) == 3  # the fourth is refused: the window is exhausted
     assert any(item["control"] == "daily_budget" for item in store.refusals())
+
+
+async def test_the_daily_run_ceiling_holds_under_concurrent_events(tmp_path) -> None:
+    """Overlapping events must not all pass an admit_run that only records
+    after the run finishes. The slot is reserved atomically at admit time, so
+    with a ceiling of one, exactly one run starts and the rest are refused."""
+    store = EventStore(tmp_path)
+    # The run must yield control between admit and record, or the coroutines
+    # never interleave and the race cannot show itself.
+    runtime = _Runtime(delay=0.01)
+    engine = AutonomousEventEngine(store, runtime)
+    store.put_subscription(_subscription(max_runs_per_day=1))
+    llm = _relevance_llm()
+
+    outcomes = await asyncio.gather(*(engine.process(_event(id=f"overlap-{i}"), llm=llm)
+                                      for i in range(4)))
+
+    assert len(runtime.runs) == 1
+    refusals = [item for item in store.refusals() if item["control"] == "max_runs_per_day"]
+    assert len(refusals) == 3
+    acted = [o for o in outcomes if o.get("decisions")]
+    assert sum(1 for o in acted for d in o["decisions"] if d.get("acted")) == 1
 
 
 # -------------------------------------------------------------------- liveness
