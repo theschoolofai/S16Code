@@ -217,6 +217,51 @@ class EventStore:
             bucket = self._load()["windows"].get(f"{subscription_id}|{day}", {})
             return float(bucket.get(kind, {}).get("usd", 0.0))
 
+    def window_try_admit_run(self, subscription_id: str, day: str, *,
+                             max_runs: int | None, budget: float | None,
+                             per_run_budget: float | None) -> tuple[bool, str, dict[str, Any]]:
+        """Reserve one run slot atomically, or refuse. Returns (ok, control, detail).
+
+        The check and the reservation share one lock section, so overlapping
+        events cannot all observe an empty ledger and all start runs.
+        """
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
+            entry = bucket.setdefault("run", {"count": 0, "usd": 0.0, "reserved": 0.0})
+            if max_runs is not None and int(entry["count"]) >= max_runs:
+                return (False, "max_runs_per_day",
+                        {"runs": int(entry["count"]), "limit": max_runs})
+            committed = float(entry["usd"]) + float(entry.get("reserved", 0.0))
+            if budget is not None and committed >= budget:
+                return (False, "daily_budget",
+                        {"spent_usd": committed, "limit_usd": budget})
+            entry["count"] = int(entry["count"]) + 1
+            if budget is not None:
+                remaining = budget - committed
+                per_run = per_run_budget if per_run_budget is not None else remaining
+                effective = min(per_run, remaining)
+                entry["reserved"] = float(entry.get("reserved", 0.0)) + effective
+            else:
+                effective = per_run_budget
+            self._save(state)
+            return (True, "", {"effective_budget": effective,
+                               "reserved": 0.0 if budget is None else effective})
+
+    def window_settle_run(self, subscription_id: str, day: str, *,
+                          reserved: float, actual: float = 0.0) -> None:
+        """Replace an admitted run's reservation with its metered spend."""
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].get(f"{subscription_id}|{day}")
+            if bucket is None or "run" not in bucket:
+                return
+            entry = bucket["run"]
+            entry["usd"] = round(entry["usd"] + max(0.0, float(actual)), 12)
+            entry["reserved"] = round(
+                max(0.0, float(entry.get("reserved", 0.0)) - max(0.0, float(reserved))), 12)
+            self._save(state)
+
     # --------------------------------------------------------------- refusals
 
     def record_refusal(self, *, control: str, reason: str, event: dict[str, Any] | None = None,

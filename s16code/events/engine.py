@@ -134,18 +134,25 @@ class AutonomousEventEngine:
                         self.store.add_decision(event.source, event.id, decision)
                         return decision
                     budget = admit.detail.get("effective_budget", subscription.budget)
-                    result = await self.runtime.run(
-                        prompt=goal,
-                        scope=MemoryScope(subscription.tenant_id, subscription.project_id,
-                                          subscription.user_id, subscription.agent_id),
-                        llm=llm, source_uri=f"event://{event.source}/{event.id}",
-                        source_author=event.source,
-                        allowed_side_effects=set(subscription.allowed_side_effects),
-                        budget=budget, transport=transport,
-                        initial_evidence={"event": event.model_dump(mode="json")},
-                    )
-                    self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
+                    reserved = float(admit.detail.get("reserved") or 0.0)
+                    try:
+                        result = await self.runtime.run(
+                            prompt=goal,
+                            scope=MemoryScope(subscription.tenant_id, subscription.project_id,
+                                              subscription.user_id, subscription.agent_id),
+                            llm=llm, source_uri=f"event://{event.source}/{event.id}",
+                            source_author=event.source,
+                            allowed_side_effects=set(subscription.allowed_side_effects),
+                            budget=budget, transport=transport,
+                            initial_evidence={"event": event.model_dump(mode="json")},
+                        )
+                    except Exception:
+                        # A failed run refunds its reservation but keeps the
+                        # consumed slot; the refusal path records it below.
+                        self.governor.settle_run(subscription.id, reserved=reserved, actual=0.0, now=now)
+                        raise
+                    self.governor.settle_run(subscription.id, reserved=reserved,
+                                             actual=float(result.get("spend_usd") or 0.0), now=now)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision

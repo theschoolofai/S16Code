@@ -20,6 +20,10 @@ WRITE_PATHS = [
                                   "occurred_at": "2026-08-05T09:00:00Z"}),
     ("post", "/v1/agent/runs", {"prompt": "hello", "tenant_id": "t"}),
     ("post", "/v1/agent/runs/run-1/resume", {}),
+    # Memory writes are write paths too: they inject evidence the agent will
+    # later treat as authorised. The README promises every write path is gated.
+    ("post", "/v1/agent/facts", {"tenant_id": "t", "text": "x", "source_uri": "u"}),
+    ("post", "/v1/agent/documents", {"tenant_id": "t", "text": "x", "source_uri": "u"}),
 ]
 
 
@@ -82,6 +86,44 @@ def test_read_only_observability_is_available_to_an_operator(app_client) -> None
     markdown = app_client.get("/v1/agent/report", params={"fmt": "markdown"})
     assert "Overnight report" in markdown.text
     assert "NOT ALIVE" in markdown.text
+
+
+def test_the_subscription_read_path_is_gated_like_its_write_path(
+    app_client, monkeypatch
+) -> None:
+    """GET /subscriptions returns the authority objects (side effects, budgets,
+    instructions). Reading them is as sensitive as writing them, so the read
+    path must fail closed exactly like PUT /subscriptions/{id} does.
+    """
+    monkeypatch.delenv("S16_CONTROL_TOKEN", raising=False)
+    unset = app_client.get("/v1/agent/subscriptions")
+    assert unset.status_code == 503
+    assert "S16_CONTROL_TOKEN" in unset.json()["detail"]
+
+    monkeypatch.setenv("S16_CONTROL_TOKEN", conftest.CONTROL_TOKEN)
+    wrong = app_client.get("/v1/agent/subscriptions",
+                           headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
+
+
+def test_the_action_route_is_a_write_path_and_fails_closed(app_client, monkeypatch) -> None:
+    """POST /v1/action resumes a parked node and re-runs it, spending money.
+
+    It is a control-plane write path (the same resume the protected
+    /v1/agent/completions and /v1/agent/runs/{id}/resume routes perform), so it
+    must fail closed like every other write path.
+    """
+    body = {"run_id": "run-x", "node_id": "n", "action": "approve"}
+
+    monkeypatch.delenv("S16_CONTROL_TOKEN", raising=False)
+    unset = app_client.post("/v1/action", json=body)
+    assert unset.status_code == 503
+    assert "S16_CONTROL_TOKEN" in unset.json()["detail"]
+
+    monkeypatch.setenv("S16_CONTROL_TOKEN", conftest.CONTROL_TOKEN)
+    wrong = app_client.post("/v1/action", json=body,
+                            headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
 
 
 def test_the_operator_console_is_served_and_is_read_only(app_client) -> None:

@@ -116,36 +116,34 @@ class AutonomyGovernor:
     # ------------------------------------------------------------------- doing
 
     def admit_run(self, subscription: Subscription, *, now: datetime | None = None) -> Verdict:
-        """May a relevant decision actually become a run?"""
+        """May a relevant decision actually become a run?
+
+        The slot is reserved atomically at admit time, so overlapping events
+        cannot all observe an empty ledger and all start runs.
+        """
         moment = now or datetime.now(UTC)
         day = _day(moment)
+        ok, control, detail = self.store.window_try_admit_run(
+            subscription.id, day,
+            max_runs=subscription.max_runs_per_day,
+            budget=subscription.daily_budget,
+            per_run_budget=subscription.budget,
+        )
+        if not ok:
+            if control == "max_runs_per_day":
+                return Verdict(False,
+                               f"daily run ceiling reached: {detail['runs']} of {detail['limit']}",
+                               control, detail)
+            return Verdict(False,
+                           f"daily budget exhausted: ${detail['spent_usd']:.8f} of ${detail['limit_usd']:.8f}",
+                           control, detail)
+        return Verdict(True, "", "", detail)
 
-        if subscription.max_runs_per_day is not None:
-            runs = self.store.window_count(subscription.id, day, kind="run")
-            if runs >= subscription.max_runs_per_day:
-                return Verdict(
-                    False,
-                    f"daily run ceiling reached: {runs} of {subscription.max_runs_per_day}",
-                    "max_runs_per_day",
-                    {"runs": runs, "limit": subscription.max_runs_per_day},
-                )
-
-        if subscription.daily_budget is not None:
-            spent = self.store.window_spend(subscription.id, day, kind="run")
-            if spent >= subscription.daily_budget:
-                return Verdict(
-                    False,
-                    f"daily budget exhausted: ${spent:.8f} of ${subscription.daily_budget:.8f}",
-                    "daily_budget",
-                    {"spent_usd": spent, "limit_usd": subscription.daily_budget},
-                )
-            # Hand the run the smaller of its per-run ceiling and what remains
-            # in the window, so one run cannot consume the whole day.
-            remaining = subscription.daily_budget - spent
-            per_run = subscription.budget if subscription.budget is not None else remaining
-            return Verdict(True, "", "", {"effective_budget": min(per_run, remaining)})
-
-        return ADMITTED
+    def settle_run(self, subscription_id: str, *, reserved: float, actual: float = 0.0,
+                   now: datetime | None = None) -> None:
+        """Replace an admitted run's reservation with its metered spend."""
+        self.store.window_settle_run(subscription_id, _day(now or datetime.now(UTC)),
+                                     reserved=reserved, actual=actual)
 
     # ----------------------------------------------------------------- ledger
 

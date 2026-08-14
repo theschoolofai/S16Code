@@ -20,9 +20,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+from s16code.auth import require_control
 
 from .agui import run_data_model, state_snapshot, to_agui_event
 from .catalog import catalog_manifest
@@ -152,7 +154,7 @@ class ActionBody(BaseModel):
     pending_summary: str = ""
 
 
-@router.post("/v1/action")
+@router.post("/v1/action", dependencies=[Depends(require_control)])
 async def action(body: ActionBody, request: Request):
     try:
         node = request.app.state.runtime.graph.snapshot(body.run_id).nodes[body.node_id]
