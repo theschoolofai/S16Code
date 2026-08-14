@@ -79,7 +79,16 @@
   .chip.failed { background: var(--red-soft); color: var(--red-ink); }
   .empty { color: var(--ink-muted); font-style: italic; padding: 22px 14px; font-family: var(--font-serif); font-size: 14.5px; }
 
-  pre.report { font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-word; margin: 0; padding: 12px 14px; max-height: 560px; overflow: auto; color: var(--ink-body); }
+  .report { font-size: 13.5px; margin: 0; padding: 12px 16px; max-height: 560px; overflow: auto; color: var(--ink-body); }
+  .report h1 { font-family: var(--font-serif); font-size: 18px; font-weight: 700; color: var(--ink); margin: 0 0 8px; }
+  .report h2 { font-family: var(--font-serif); font-size: 15px; font-weight: 700; color: var(--ink); margin: 16px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
+  .report ul { margin: 5px 0 10px; padding-left: 18px; }
+  .report li { margin: 3px 0; overflow-wrap: anywhere; }
+  .report li ul { margin: 2px 0 2px; }
+  .report p { margin: 5px 0; }
+  .report em { color: var(--ink-muted); }
+  .report strong { color: var(--ink); font-weight: 600; }
+  .report code { font-family: var(--font-mono); font-size: 11.5px; background: var(--surface-alt); border: 1px solid var(--rule); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
   .controls { display: flex; gap: 8px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; background: var(--surface-alt); }
   .btn { appearance: none; border: 1px solid var(--rule-strong); background: var(--surface); color: var(--ink-body); border-radius: 999px; padding: 5px 12px; font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; cursor: pointer; }
   .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -110,7 +119,7 @@
 <div class="wrap">
   <header>
     <div>
-      <div class="eyebrow">S16 · autonomy console</div>
+      <div class="eyebrow">S16 &middot; autonomy console</div>
       <h1>What the agent did while nobody was watching</h1>
       <p class="sub">A projection of the event history. This page holds no state the runtime does not already own.</p>
     </div>
@@ -118,23 +127,23 @@
     <div class="life unknown" id="life" role="status" aria-live="polite">
       <div class="pulse" id="pulse"></div>
       <div>
-        <div class="lt" id="lifeTitle">checking…</div>
+        <div class="lt" id="lifeTitle">checking&hellip;</div>
         <div class="lb" id="lifeBody">GET /v1/agent/liveness</div>
       </div>
     </div>
   </header>
 
   <div class="tiles">
-    <div class="tile acted"><div class="lab">acted</div><div class="val" id="tActed">—</div></div>
-    <div class="tile ignored"><div class="lab">ignored</div><div class="val" id="tIgnored">—</div></div>
-    <div class="tile refused"><div class="lab">refused by a control</div><div class="val" id="tRefused">—</div></div>
-    <div class="tile watch"><div class="lab">cost of watching</div><div class="val" id="tWatch">—</div></div>
-    <div class="tile doing"><div class="lab">cost of doing</div><div class="val" id="tDoing">—</div></div>
+    <div class="tile acted"><div class="lab">acted</div><div class="val" id="tActed">&mdash;</div></div>
+    <div class="tile ignored"><div class="lab">ignored</div><div class="val" id="tIgnored">&mdash;</div></div>
+    <div class="tile refused"><div class="lab">refused by a control</div><div class="val" id="tRefused">&mdash;</div></div>
+    <div class="tile watch"><div class="lab">cost of watching</div><div class="val" id="tWatch">&mdash;</div></div>
+    <div class="tile doing"><div class="lab">cost of doing</div><div class="val" id="tDoing">&mdash;</div></div>
   </div>
 
   <div class="cols">
     <section class="panel">
-      <h2>Live event tape <span class="tag" id="cursorTag">cursor 0</span> <span class="tag" id="streamTag">connecting…</span></h2>
+      <h2>Live event tape <span class="tag" id="cursorTag">cursor 0</span> <span class="tag" id="streamTag">connecting&hellip;</span></h2>
       <div class="tape" id="tape"><div class="empty">Waiting for the first event. Deliver one to <code>POST /v1/agent/events</code>.</div></div>
     </section>
 
@@ -146,7 +155,7 @@
       </div>
 
       <div class="controls">
-        <button class="btn" id="refresh">↻ Refresh</button>
+        <button class="btn" id="refresh">&#8635; Refresh</button>
         <label class="hint">window
           <select id="hours" style="font-family:var(--font-mono);font-size:11px;margin-left:5px">
             <option value="1">1h</option><option value="12" selected>12h</option>
@@ -163,7 +172,7 @@
         <div class="tape" id="subs"><div class="empty">No subscriptions configured.</div></div>
       </div>
       <div id="p-rep" role="tabpanel" aria-labelledby="tab-rep" tabindex="0" hidden>
-        <pre class="report" id="report">loading…</pre>
+        <div class="report" id="report">loading&hellip;</div>
       </div>
     </section>
   </div>
@@ -175,6 +184,51 @@
 </div>
 
 <script>
+// The report is served as markdown because a person reads it. Rendering it
+// here keeps that true in the browser as well, without pulling in a parser:
+// the report only ever emits headings, bullets, bold, italic and code, so a
+// small deliberate subset is safer than a general one. Everything is escaped
+// before any markup is added, so report content can never inject HTML.
+function renderMarkdown(source) {
+  const esc = (s) => String(s)
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])_([^_]+)_(?=[\s.,)]|$)/g, "$1<em>$2</em>");
+
+  const out = [];
+  let list = 0;
+  const closeTo = (depth) => { while (list > depth) { out.push("</ul>"); list--; } };
+
+  for (const raw of String(source).split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { closeTo(0); continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeTo(0);
+      const level = Math.min(heading[1].length, 2);
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = line.match(/^(\s*)[-*]\s+(.*)$/);
+    if (bullet) {
+      const depth = Math.floor(bullet[1].length / 2) + 1;
+      while (list < depth) { out.push("<ul>"); list++; }
+      closeTo(depth);
+      out.push(`<li>${inline(bullet[2])}</li>`);
+      continue;
+    }
+
+    closeTo(0);
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  closeTo(0);
+  return out.join("");
+}
+
 // ---------------------------------------------------------------------------
 // A projection of the event history, nothing more. The console keeps no state
 // the runtime does not already own: on reconnect it resumes from the SSE cursor
@@ -199,7 +253,7 @@ async function liveness() {
     $("lifeTitle").textContent = alive ? "watcher alive" : "watcher not alive";
     const silent = body.silent_for_seconds;
     $("lifeBody").textContent = body.reason
-      + (silent != null ? ` · silent ${Math.round(silent)}s` : "");
+      + (silent != null ? ` - silent ${Math.round(silent)}s` : "");
   } catch (error) {
     // The console failing to reach the runtime is itself a liveness fact.
     box.className = "life dead";
@@ -214,8 +268,8 @@ function decisionChips(record) {
   (record.decisions || []).forEach(d => {
     let cls = "ignored", label;
     if (d.failed) { cls = "failed"; label = "gate failed"; }
-    else if (d.refused_by) { cls = "refused"; label = "refused · " + d.refused_by; }
-    else if (d.relevant) { cls = "acted"; label = "acted · " + (d.run_status || "run"); }
+    else if (d.refused_by) { cls = "refused"; label = "refused - " + d.refused_by; }
+    else if (d.relevant) { cls = "acted"; label = "acted - " + (d.run_status || "run"); }
     else { label = "ignored"; }
     const line = el("div");
     line.append(el("span", "chip " + cls, label));
@@ -236,7 +290,7 @@ function addEvent(record) {
   const ev = record.event || {};
   body.append(el("b", null, `${ev.source || "?"} / ${ev.type || "?"}`));
   const meta = [ev.id, ev.subject, ev.actor ? "actor " + ev.actor : null]
-    .filter(Boolean).join("  ·  ");
+    .filter(Boolean).join("  -  ");
   body.append(el("span", null, meta));
   body.append(decisionChips(record));
   row.append(body);
@@ -247,7 +301,7 @@ function addEvent(record) {
 
 function connect() {
   if (source) source.close();
-  $("streamTag").textContent = "connecting…";
+  $("streamTag").textContent = "connecting...";
   source = new EventSource("/v1/agent/events/stream?after=" + cursor);
   source.addEventListener("open", () => { $("streamTag").textContent = "streaming"; });
   source.addEventListener("autonomous_event", e => {
@@ -276,7 +330,7 @@ async function refreshPanels() {
     const refusals = (await refRes.json()).refusals || [];
     const box = $("refusals"); box.textContent = "";
     if (!refusals.length) {
-      box.append(el("div", "empty", "Nothing refused in this window. That is either a calm window or an unbounded one — the tiles above say which."));
+      box.append(el("div", "empty", "Nothing refused in this window. That is either a calm window or an unbounded one - the tiles above say which."));
     } else {
       refusals.slice().reverse().forEach(r => {
         const row = el("div", "row");
@@ -305,7 +359,7 @@ async function refreshPanels() {
           s.daily_budget != null ? `day ${usd(s.daily_budget)}` : null,
           s.max_runs_per_day != null ? `${s.max_runs_per_day} runs/day` : null,
           s.daily_triage_budget != null ? `triage ${usd(s.daily_triage_budget)}` : null,
-        ].filter(Boolean).join("  ·  ");
+        ].filter(Boolean).join("  -  ");
         body.append(el("span", null, (ceilings || "NO WINDOW CEILING") +
           "   side effects: " + ((s.allowed_side_effects || []).join(", ") || "none")));
         row.append(body); sbox.append(row);
@@ -314,12 +368,12 @@ async function refreshPanels() {
 
     const report = await repRes.json();
     const totals = report.totals || {};
-    $("tActed").textContent = totals.acted ?? "—";
-    $("tIgnored").textContent = totals.ignored ?? "—";
-    $("tRefused").textContent = totals.blocked_by_a_control ?? "—";
+    $("tActed").textContent = totals.acted ?? "-";
+    $("tIgnored").textContent = totals.ignored ?? "-";
+    $("tRefused").textContent = totals.blocked_by_a_control ?? "-";
     $("tWatch").textContent = usd(totals.cost_of_watching_usd);
     $("tDoing").textContent = usd(totals.cost_of_doing_usd);
-    $("report").textContent = await repMd.text();
+    $("report").innerHTML = renderMarkdown(await repMd.text());
     $("refreshedAt").textContent = "refreshed " + new Date().toTimeString().slice(0, 8);
   } catch (error) {
     $("report").textContent = "Could not reach the runtime: " + error;
@@ -358,7 +412,7 @@ refreshPanels();
 // The tape is the nice-to-have; the liveness beat and the ledgers are not. If
 // SSE is unavailable or blocked, polling must still run, so a missing stream
 // degrades the page rather than silencing it.
-try { connect(); } catch (error) { $("streamTag").textContent = "stream unavailable · polling"; }
+try { connect(); } catch (error) { $("streamTag").textContent = "stream unavailable - polling"; }
 setInterval(liveness, 5000);
 setInterval(refreshPanels, 20000);
 </script>
