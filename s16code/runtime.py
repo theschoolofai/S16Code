@@ -970,6 +970,10 @@ class AgentRuntime:
                 "edges": snapshot.edges}, "trace": {"planner": getattr(planner, "last_selection", {"mode": "deterministic"}),
                 "agents": trace}, "events": [event.__dict__ for event in self.graph.events(run_id)],
                 "principal": who,
+                # The autonomy governor reads spend_usd to enforce daily_budget.
+                # It was only ever read, never written, so the ceiling summed
+                # zero no matter what a run actually cost.
+                "spend_usd": float(run_budget.spent) if run_budget is not None else 0.0,
                 "budget": run_budget.snapshot() if run_budget is not None else None,
                 "economics": economics_config.describe() if economics_config is not None else None,
                 "allocations": list(getattr(planner, "allocations", []))}
