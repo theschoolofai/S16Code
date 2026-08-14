@@ -211,7 +211,8 @@ class MemoryStore:
         return " AND ".join(clauses), values
 
     def recall(self, query: str, scope: MemoryScope, *, kinds: Iterable[MemoryKind] | None = None,
-               limit: int = 8, include_history: bool = False, expand_neighbors: int = 0) -> list[MemoryRecord]:
+               limit: int = 8, include_history: bool = False, expand_neighbors: int = 0,
+               include_own_answers: bool = False) -> list[MemoryRecord]:
         where, values = self._scope_where(scope)
         if not include_history:
             where += " AND status='current' AND (valid_to IS NULL OR valid_to > ?)"
@@ -225,6 +226,27 @@ class MemoryStore:
             # answer evidence. Callers such as `audit_events` request them
             # explicitly.
             where += " AND kind NOT IN ('audit', 'policy')"
+        if not include_own_answers:
+            # An answer the agent produced is output, not evidence. It is stored
+            # as an episode so a conversation has continuity, but returning it
+            # here as ambient evidence closes a loop with no damping: the answer
+            # is a near-perfect lexical match for the question that produced it,
+            # so it becomes the top hit next time that question is asked, and
+            # the agent ends up citing itself.
+            #
+            # Observed: asked three times about a calendar invitation held in a
+            # sandbox file, recall returned the agent's own three previous
+            # "there is no information about it" replies as the top three hits.
+            # Each attempt made it more certain of something it had never
+            # checked, and rephrasing could not recover, because every retry
+            # added another denial.
+            #
+            # Only self-authored answers are excluded. What the user said is
+            # still evidence, and so are facts, documents and everything else;
+            # the discriminator is the run://<id>/answer source this store
+            # writes on the way out. Callers that genuinely want "what did you
+            # tell me before" pass include_own_answers=True.
+            where += " AND NOT (kind='episode' AND sources_json LIKE '%run://%/answer\"%')"
         rows = self.db.execute(f"SELECT * FROM records WHERE {where}", values).fetchall()
         if not rows:
             return []
