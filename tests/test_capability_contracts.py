@@ -62,12 +62,32 @@ def test_a_new_capability_gets_the_same_evidence_quality_as_a_builtin() -> None:
 
 
 def test_an_undeclared_capability_result_is_still_never_silently_lost() -> None:
-    record = generic_evidence({"total": 3, "uri": "file://out.txt", "raw": "drop me"},
+    record = generic_evidence({"total": 3, "uri": "sandbox://out.txt", "raw": "drop me"},
                               skill="mystery", fallback_source="graph://run/node",
                               drop=("raw",))
     assert "raw" not in record["text"]
-    assert record["sources"] == ["file://out.txt"]
+    assert record["sources"] == ["sandbox://out.txt"]
     assert record["kind"] == "capability:mystery"
+
+
+def test_a_source_describing_the_host_filesystem_is_not_promoted() -> None:
+    """The sample above used to be a file:// URI, which is now refused.
+
+    A source is shown to the model and quoted from there into channel replies.
+    A file:// URI names nothing a reader outside this machine can use, and when
+    it is built from a resolved path it carries the operator's home directory
+    and username to a third-party service. Refusing it costs an internal
+    provenance fallback and nothing else.
+    """
+    record = generic_evidence({"total": 3, "uri": "file://out.txt"},
+                              skill="mystery", fallback_source="graph://run/node")
+    assert record["sources"] == ["graph://run/node"]
+
+    leaky = generic_evidence({"path": r"C:\Users\alice\sandbox\notes.txt"},
+                             skill="mystery", fallback_source="graph://run/node")
+    assert leaky["sources"] == ["graph://run/node"]
+    # And not merely unpromoted: the serialised body must not carry it either.
+    assert "alice" not in leaky["text"]
 
 
 def test_expanded_items_are_attributed_individually() -> None:
@@ -86,10 +106,10 @@ def test_an_empty_item_list_falls_back_to_its_declared_summary() -> None:
                                     sources=("source_uri",), summary_kind="index_report",
                                     summary="Indexed {chunks} semantic chunks from this document.")
     produced = project_evidence(projection, {"manifest": [], "chunks": 4,
-                                             "source_uri": "file://handbook.md"},
+                                             "source_uri": "sandbox://handbook.md"},
                                 fallback_source="graph://run/node")
     assert produced == [{"text": "Indexed 4 semantic chunks from this document.",
-                         "sources": ["file://handbook.md"], "kind": "index_report"}]
+                         "sources": ["sandbox://handbook.md"], "kind": "index_report"}]
 
 
 def test_families_replace_the_literal_name_sets_components_used_to_carry() -> None:

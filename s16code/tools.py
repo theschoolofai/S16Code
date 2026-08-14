@@ -100,14 +100,21 @@ def write_text_file(path: str, content: str, *, overwrite: bool = False) -> dict
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     payload = target.read_bytes()
-    return {"path": str(target), "uri": target.as_uri(), "bytes": len(payload),
+    # The caller's own relative path, and no filesystem URI. These results reach
+    # the model through generic_evidence, which json.dumps the whole dict into
+    # the evidence text, so a resolved path here becomes a host path the model
+    # can quote into a channel reply.
+    return {"path": path, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def file_sha256(path: str) -> dict:
     target = sandbox_path(path)
     payload = target.read_bytes()
-    return {"path": str(target), "uri": target.as_uri(), "bytes": len(payload),
+    # `file_sha256` is not a side effect, so unlike its neighbours here it is
+    # plannable on any channel-driven run without appearing in an allowlist.
+    # That makes it the one in this group that could leak today.
+    return {"path": path, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
@@ -121,7 +128,7 @@ def copy_file(source: str, destination: str, *, overwrite: bool = False) -> dict
     source_payload, destination_payload = origin.read_bytes(), target.read_bytes()
     source_hash = hashlib.sha256(source_payload).hexdigest()
     destination_hash = hashlib.sha256(destination_payload).hexdigest()
-    return {"source": str(origin), "destination": str(target), "uri": target.as_uri(),
+    return {"source": source, "destination": destination,
             "bytes": len(destination_payload), "source_sha256": source_hash,
             "destination_sha256": destination_hash, "match": source_hash == destination_hash}
 
