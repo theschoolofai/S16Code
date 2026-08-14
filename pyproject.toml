@@ -19,6 +19,10 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.27",
     "ddgs>=9,<10",
     "networkx>=3.6,<4",
+    # Windows ships no system tz database, so zoneinfo falls back to this
+    # package. Without it current_datetime() raises for every IANA zone except
+    # UTC, and the agent cannot resolve "today" in the user's own timezone.
+    "tzdata; platform_system == 'Windows'",
 ]
 
 [dependency-groups]
