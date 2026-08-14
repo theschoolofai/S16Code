@@ -85,7 +85,10 @@ async def report(request: Request, hours: int = Query(default=24, ge=1, le=720),
                  fmt: str = Query(default="json", pattern="^(json|markdown)$")):
     """The human-reviewable account of a period nobody watched."""
     since = datetime.now(UTC) - timedelta(hours=hours)
-    document = morning_report(request.app.state.event_store, since=since)
+    # The graph decides whether a parked run is still parked. Without it the
+    # report would keep listing questions that were answered hours ago.
+    document = morning_report(request.app.state.event_store, since=since,
+                              graph=getattr(request.app.state.runtime, "graph", None))
     if fmt == "markdown":
         return PlainTextResponse(render_markdown(document))
     return document
