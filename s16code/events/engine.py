@@ -26,16 +26,33 @@ def _json_object(text: str) -> dict[str, Any]:
 
 
 def _spend_of(reply: dict[str, Any]) -> float:
-    """What the gate itself cost. Deciding not to act is not free."""
+    """What the gate itself cost. Deciding not to act is not free.
+
+    A metered call record is produced by the economics controller and its cost
+    field is named ``cost`` (see economics.budget.Charge). Reading only
+    ``cost_usd``/``usd`` silently returned zero for every real call, which made
+    ``daily_triage_budget`` unenforceable. All three spellings are accepted so
+    the helper works against the controller's records and the gateway client's.
+    """
     total = 0.0
     for call in reply.get("metered_calls", []) or []:
         if not isinstance(call, dict):
             continue
-        try:
-            total += float(call.get("cost_usd") or call.get("usd") or 0.0)
-        except (TypeError, ValueError):
-            continue
-    return total
+        for key in ("cost", "cost_usd", "usd"):
+            value = call.get(key)
+            if value is not None:
+                try:
+                    total += float(value)
+                except (TypeError, ValueError):
+                    pass
+                break
+    if total:
+        return total
+    # Fall back to a single-call reply that carries its price at the top level.
+    try:
+        return float(reply.get("cost_usd") or (reply.get("cost") or {}).get("total_usd") or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
 
 
 class AutonomousEventEngine:

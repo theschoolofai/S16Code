@@ -94,6 +94,13 @@ class GatewayClient:
             "cache_creation_input_tokens": body.get("cache_creation_input_tokens") or 0,
             "latency_ms": body.get("latency_ms"),
             "stop_reason": body.get("stop_reason"),
+            # The gateway is the only component that knows what a call cost: it
+            # owns the provider keys, the model routing and the price table. A
+            # caller cannot recompute this from tokens without duplicating that
+            # table and drifting from it. Carrying it through is what lets the
+            # autonomy governor enforce a budget in the currency the budget is
+            # written in.
+            "cost": body.get("cost") or {},
         }
 
     async def complete(
@@ -107,9 +114,21 @@ class GatewayClient:
         """The unbudgeted path, for a run created without a ceiling."""
         body: dict[str, Any] = {"session": session, **(request or {})}
         result = await self.chat(prompt=prompt, system=system, request=body)
+        # The gateway prices every call and returns cost.total_usd. Dropping it
+        # here is what made the relevance gate look free: the autonomy governor
+        # sums this to enforce daily_triage_budget, so with no cost reaching it
+        # the ceiling could never be reached and "cost of watching" was always
+        # zero in the morning report.
+        cost = result.get("cost") or {}
+        spend = float(cost.get("total_usd") or 0.0)
         return {
             "text": result["text"], "provider": result["provider"], "model": result["model"],
             "input_tokens": result["input_tokens"], "output_tokens": result["output_tokens"],
+            "cost": cost, "cost_usd": spend,
+            # Same shape a metered node result carries, so one summing helper
+            # works for both the triage path and the run path.
+            "metered_calls": [{"cost": spend, "provider": result.get("provider"),
+                               "model": result.get("model")}] if spend else [],
         }
 
     async def health(self) -> dict[str, Any]:

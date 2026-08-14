@@ -19,10 +19,28 @@ missing piece is a declaration here.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Any
 from urllib.parse import urlparse
+
+from .core.redaction import scrub_host_paths
+
+# A source that describes the machine rather than the material. Every producer
+# is supposed to emit a relative name or an opaque scheme, but this is the one
+# funnel every capability result passes through, so it is the cheapest place to
+# stop a future capability reintroducing the same disclosure.
+#
+# A denial rather than an allowlist of schemes: an allowlist silently discards
+# legitimate provenance the day someone adds a new scheme, and losing evidence
+# is a worse failure than keeping an odd-looking source.
+_HOST_PATH = re.compile(r"(?i)(^file:|\b[A-Za-z]:[\\/]|^\\\\|/home/|/Users/)")
+
+
+def names_a_host_path(value: str) -> bool:
+    """True when this string discloses the filesystem the agent runs on."""
+    return bool(_HOST_PATH.search(value))
 
 # A capability worker may report that it ran but could not obtain what was
 # asked of it. These two optional result keys are the declared, registry-owned
@@ -260,6 +278,11 @@ def project_evidence(projection: EvidenceProjection, result: dict[str, Any], *,
                 found.append(projection.source_template.format(**result))
             except (KeyError, IndexError):
                 pass
+        # A declared projection is no more trusted than a generic one: the leak
+        # this guards against came from a source_template interpolating a
+        # resolved path. Dropping the offending source falls back to graph://
+        # provenance, which is what the answer worker already treats as internal.
+        found = [source for source in found if not names_a_host_path(source)]
         if not found and projection.external_sources:
             found = list(external)
         return found or [fallback_source]
@@ -322,9 +345,14 @@ def generic_evidence(result: dict[str, Any], *, skill: str, fallback_source: str
     """The projection for a capability that declared none: never silently lost."""
     public = {key: value for key, value in result.items() if key not in drop}
     sources = [value for key, value in public.items()
-               if key in {"uri", "url", "endpoint", "source_uri", "path"} and isinstance(value, str)]
+               if key in {"uri", "url", "endpoint", "source_uri", "path"}
+               and isinstance(value, str) and not names_a_host_path(value)]
     import json as _json
-    return {"text": _json.dumps(public, ensure_ascii=False, default=str)[:12_000],
+    # The whole result is serialised into the evidence body, so scrubbing only
+    # the promoted sources would leave a host path sitting in the text under any
+    # key this function has never heard of.
+    body = scrub_host_paths(_json.dumps(public, ensure_ascii=False, default=str)[:12_000])
+    return {"text": body,
             "sources": sources or [fallback_source], "kind": f"capability:{skill}"}
 
 
@@ -372,8 +400,14 @@ def default_registry() -> CapabilityRegistry:
         Capability("read_file", "Read a UTF-8 file inside the configured sandbox. Paths are relative to the sandbox.",
                    {"path": string("Sandbox-relative file path.", maximum=2_000)},
                    families=("evidence",),
+                   # `sandbox://`, not `file://`: this string is rendered into the
+                   # model's context as the source of the evidence, and a `file://`
+                   # URI built from a resolved path carries the host's directory
+                   # layout and username into anything the model then says.
+                   # `sandbox://reminders.txt` names the same file without
+                   # describing the machine it lives on.
                    evidence=EvidenceProjection(kind="local_file", text="text",
-                                               source_template="file://{path}")),
+                                               source_template="sandbox://{path}")),
         Capability("write_file", "Write a UTF-8 text artifact inside the configured sandbox, then return its path and SHA-256 digest. Use only when the user explicitly requests a file or a repair.",
                    {"path": string("Sandbox-relative destination path.", maximum=2_000),
                     "content": string("Complete text to write.", maximum=60_000),
@@ -412,8 +446,12 @@ def default_registry() -> CapabilityRegistry:
                    {"title": string("Human-readable event title.", maximum=300),
                     "dates": Argument("array", "ISO-8601 dates (YYYY-MM-DD).", minimum=1, maximum=20, item_kind="string")},
                    side_effect=True,
-                   evidence=EvidenceProjection(kind="calendar_artifact", join="artifacts",
-                                               prefix="Calendar events created: ", sources=("artifacts",))),
+                   # Names, not URIs: this projection's `join` puts the values
+                   # into the evidence *body*, which the model reads as prose to
+                   # summarise, so a file:// URI here is quoted back verbatim.
+                   evidence=EvidenceProjection(kind="calendar_artifact", join="artifact_names",
+                                               prefix="Calendar events created: ",
+                                               sources=("artifact_names",))),
         Capability("list_channels", "Ask GLC for the currently installed channel adapters and their connection state. The list is discovered at runtime, never encoded in the planner.",
                    {}),
         Capability("send_channel_message", "Send one text message through an installed GLC channel. Use only when the request or an authorised subscription explicitly identifies the channel and recipient.",

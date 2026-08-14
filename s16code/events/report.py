@@ -45,8 +45,57 @@ def liveness_status(store: EventStore, *, now: datetime | None = None,
     }
 
 
+def _awaiting_a_human(store: EventStore, window_start: datetime,
+                      graph: Any = None) -> list[dict[str, Any]]:
+    """Runs parked on a question nobody has answered yet.
+
+    This is the section the module docstring promises and the only place a
+    parked approval surfaces on its own. A run started by an event has no
+    channel to reply on, so when it stops to ask something nothing is sent
+    anywhere: not to Telegram, not by email, not on completion. Without this
+    list the agent can ask a question that no surface ever shows.
+
+    ``graph`` is optional so the report still works without a runtime. When it
+    is supplied the live node state decides, because a decision record keeps
+    the status it had when it was written and would otherwise keep reporting a
+    question that was answered hours ago.
+    """
+    waiting: list[dict[str, Any]] = []
+    for record in store.events():
+        received = record.get("received_at")
+        if received:
+            try:
+                if datetime.fromisoformat(received) < window_start:
+                    continue
+            except ValueError:
+                pass
+        event = record.get("event") or {}
+        for decision in record.get("decisions", []):
+            run_id = decision.get("run_id")
+            if not run_id or decision.get("run_status") != "waiting":
+                continue
+            question = None
+            if graph is not None:
+                try:
+                    nodes = graph.snapshot(run_id).nodes
+                except (KeyError, AttributeError):
+                    continue
+                parked = [node for node in nodes.values() if node.get("state") == "waiting"]
+                if not parked:
+                    continue  # answered since; not still awaiting anyone
+                question = (parked[0].get("result") or {}).get("question") \
+                    or (parked[0].get("input") or {}).get("question")
+            waiting.append({
+                "event": f"{event.get('source')}/{event.get('id')}",
+                "subscription": decision.get("subscription_id"),
+                "run_id": run_id,
+                "question": str(question)[:2_000] if question else None,
+            })
+    return waiting
+
+
 def morning_report(store: EventStore, *, since: datetime | None = None,
-                   now: datetime | None = None) -> dict[str, Any]:
+                   now: datetime | None = None, graph: Any = None) -> dict[str, Any]:
     moment = now or datetime.now(UTC)
     window_start = since or (moment - timedelta(hours=24))
     governor = AutonomyGovernor(store)
@@ -108,7 +157,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                                "subscription": item.get("subscription_id")}
                               for item in refusals],
         "budgets": budgets,
-        "awaiting_a_human": [],
+        "awaiting_a_human": _awaiting_a_human(store, window_start, graph),
     }
 
 
@@ -136,4 +185,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         for item in report[key][:100]:
             lines.append(f"- `{item.get('event')}` — {item.get('reason') or item.get('control')}")
         lines.append("")
+
+    # The section an operator acts on. A parked run is the one outcome that
+    # needs a person, and it is announced nowhere else.
+    parked = report.get("awaiting_a_human") or []
+    lines.append(f"## Awaiting a human ({len(parked)})")
+    if not parked:
+        lines.append("_nothing_")
+    for item in parked[:100]:
+        lines.append(f"- `{item.get('event')}` run `{item.get('run_id')}`")
+        if item.get("question"):
+            lines.append(f"  - {item['question']}")
+    lines.append("")
     return "\n".join(lines)

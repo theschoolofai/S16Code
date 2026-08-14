@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
+from ..redaction import scrub_host_paths
+
 if TYPE_CHECKING:
     from .store import GraphStore
 
@@ -192,7 +194,12 @@ class LiveGraphExecutor:
         try:
             return task, True, await worker(task)
         except Exception as exc:  # worker failures become planner-visible events
-            return task, False, {"error": f"{type(exc).__name__}: {exc}"}
+            # Scrubbed here rather than where the error is displayed, because
+            # this string has three destinations: the durable graph journal, the
+            # planner's next prompt, and the answer worker's evidence. An OSError
+            # carries the absolute filename it failed on, so an unscrubbed error
+            # writes the operator's home directory into all three at once.
+            return task, False, {"error": scrub_host_paths(f"{type(exc).__name__}: {exc}")}
 
     def _cancel_graph_cancelled_tasks(
         self,
