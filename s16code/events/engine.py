@@ -80,8 +80,35 @@ class AutonomousEventEngine:
         record, fresh = self.store.ingest(event)
         if not fresh:
             return {"accepted": False, "duplicate": True, "record": record}
-        matching = [item for item in self.store.subscriptions()
-                    if self._matches(item, event) and not self._self_caused(item, event)]
+        matching: list[Subscription] = []
+        ignored_now: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
+        for item in self.store.subscriptions():
+            if not self._matches(item, event):
+                continue
+            if self._self_caused(item, event):
+                refusal = {
+                    "subscription_id": item.id,
+                    "relevant": False,
+                    "reason": (
+                        f"ignored actor {event.actor!r}: listed on subscription "
+                        f"{item.id!r} ignore_actors"
+                    ),
+                    "goal": "",
+                    "ignored": True,
+                    "decided_at": now.isoformat(),
+                }
+                self.store.record_refusal(
+                    control="ignore_actors",
+                    reason=refusal["reason"],
+                    event=event.model_dump(mode="json"),
+                    subscription_id=item.id,
+                    detail={"actor": event.actor},
+                )
+                self.store.add_decision(event.source, event.id, refusal)
+                ignored_now.append(refusal)
+                continue
+            matching.append(item)
 
         async def decide(subscription: Subscription) -> dict[str, Any]:
             async with self._slots:
@@ -168,4 +195,5 @@ class AutonomousEventEngine:
             else:
                 clean.append(outcome)
         return {"accepted": True, "duplicate": False, "sequence": record["sequence"],
-                "matched": len(matching), "decisions": clean}
+                "matched": len(matching), "ignored": len(ignored_now),
+                "decisions": ignored_now + clean}

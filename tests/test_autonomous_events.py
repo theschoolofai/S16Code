@@ -74,6 +74,26 @@ async def test_irrelevant_and_unmatched_events_do_not_start_agents(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ignore_actors_are_recorded_and_do_not_start_agents(tmp_path):
+    store, runtime = EventStore(tmp_path), RecordingRuntime()
+    store.put_subscription(subscription(ignore_actors=["spam-bot"]))
+    engine = AutonomousEventEngine(store, runtime)
+
+    async def should_not_run(_prompt, _system):
+        raise AssertionError("ignored actors must not reach the relevance gate")
+
+    outcome = await engine.process(event(actor="spam-bot"), llm=should_not_run)
+    assert outcome["accepted"] is True
+    assert outcome["matched"] == 0
+    assert outcome["ignored"] == 1
+    assert outcome["decisions"][0]["relevant"] is False
+    assert "spam-bot" in outcome["decisions"][0]["reason"]
+    assert runtime.calls == []
+    refusals = store.refusals()
+    assert refusals and refusals[0]["control"] == "ignore_actors"
+
+
+@pytest.mark.asyncio
 async def test_one_event_can_launch_independent_subscriptions_concurrently(tmp_path):
     store, runtime = EventStore(tmp_path), RecordingRuntime()
     store.put_subscription(subscription(id="security"))
