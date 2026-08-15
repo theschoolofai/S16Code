@@ -144,8 +144,11 @@ class AutonomousEventEngine:
                         budget=budget, transport=transport,
                         initial_evidence={"event": event.model_dump(mode="json")},
                     )
+                    # admit_run() already claimed this run's slot in the
+                    # count ceiling atomically, at admission time -- only
+                    # the spend is new information here.
                     self.governor.record(subscription.id, kind="run",
-                                         usd=float(result.get("spend_usd") or 0.0), now=now)
+                                         usd=float(result.get("spend_usd") or 0.0), now=now, count=0)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)
                 return decision

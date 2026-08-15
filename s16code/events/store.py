@@ -198,14 +198,44 @@ class EventStore:
 
     # ---------------------------------------------------------- window ledger
 
-    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0) -> None:
+    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0,
+                      count: int = 1) -> None:
         with self._lock:
             state = self._load()
             bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
             entry = bucket.setdefault(kind, {"count": 0, "usd": 0.0})
-            entry["count"] += 1
+            entry["count"] += count
             entry["usd"] = round(entry["usd"] + max(0.0, float(usd)), 12)
             self._save(state)
+
+    def try_reserve(self, subscription_id: str, day: str, *, kind: str, limit: int | None) -> bool:
+        """Check a count ceiling and claim one unit against it in the same
+        lock acquisition. A caller that checks `window_count()` and only
+        later calls `window_record()` leaves a gap between the two: two
+        concurrent callers can both read the window before either writes to
+        it, and both pass a ceiling that was supposed to admit only one.
+        This closes that gap for callers that must enforce the ceiling
+        before starting the work being counted, not after."""
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
+            entry = bucket.setdefault(kind, {"count": 0, "usd": 0.0})
+            if limit is not None and entry["count"] >= limit:
+                return False
+            entry["count"] += 1
+            self._save(state)
+            return True
+
+    def release_reservation(self, subscription_id: str, day: str, *, kind: str) -> None:
+        """Undo a try_reserve() claim that turned out not to be used --
+        e.g. the run-count reservation succeeded but a separate,
+        non-atomic budget check then refused the run anyway."""
+        with self._lock:
+            state = self._load()
+            bucket = state["windows"].get(f"{subscription_id}|{day}")
+            if bucket and kind in bucket:
+                bucket[kind]["count"] = max(0, bucket[kind]["count"] - 1)
+                self._save(state)
 
     def window_count(self, subscription_id: str, day: str, *, kind: str) -> int:
         with self._lock:
