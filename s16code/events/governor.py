@@ -116,23 +116,32 @@ class AutonomyGovernor:
     # ------------------------------------------------------------------- doing
 
     def admit_run(self, subscription: Subscription, *, now: datetime | None = None) -> Verdict:
-        """May a relevant decision actually become a run?"""
+        """May a relevant decision actually become a run?
+
+        The run-count ceiling is claimed here, atomically, rather than left
+        for the caller to record after the run finishes: `runtime.run()` can
+        take seconds, and two events matching this subscription that arrive
+        close enough together must not both read "under the ceiling" before
+        either of them is counted. See try_reserve()."""
         moment = now or datetime.now(UTC)
         day = _day(moment)
 
-        if subscription.max_runs_per_day is not None:
+        if not self.store.try_reserve(subscription.id, day, kind="run",
+                                      limit=subscription.max_runs_per_day):
             runs = self.store.window_count(subscription.id, day, kind="run")
-            if runs >= subscription.max_runs_per_day:
-                return Verdict(
-                    False,
-                    f"daily run ceiling reached: {runs} of {subscription.max_runs_per_day}",
-                    "max_runs_per_day",
-                    {"runs": runs, "limit": subscription.max_runs_per_day},
-                )
+            return Verdict(
+                False,
+                f"daily run ceiling reached: {runs} of {subscription.max_runs_per_day}",
+                "max_runs_per_day",
+                {"runs": runs, "limit": subscription.max_runs_per_day},
+            )
 
         if subscription.daily_budget is not None:
             spent = self.store.window_spend(subscription.id, day, kind="run")
             if spent >= subscription.daily_budget:
+                # The run-count slot was claimed above but no run will start;
+                # give it back rather than spending a slot on a refusal.
+                self.store.release_reservation(subscription.id, day, kind="run")
                 return Verdict(
                     False,
                     f"daily budget exhausted: ${spent:.8f} of ${subscription.daily_budget:.8f}",
@@ -150,9 +159,9 @@ class AutonomyGovernor:
     # ----------------------------------------------------------------- ledger
 
     def record(self, subscription_id: str, *, kind: str, usd: float = 0.0,
-               now: datetime | None = None) -> None:
+               now: datetime | None = None, count: int = 1) -> None:
         self.store.window_record(subscription_id, _day(now or datetime.now(UTC)),
-                                 kind=kind, usd=usd)
+                                 kind=kind, usd=usd, count=count)
 
     def snapshot(self, subscription: Subscription, *, now: datetime | None = None) -> dict[str, Any]:
         """What an operator needs to see: how much of each bound is left."""
