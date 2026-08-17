@@ -84,7 +84,15 @@ class AutonomyGovernor:
             return Verdict(False, f"event was caused by this agent ({actor}); refusing to answer itself",
                            "self_trigger", {"actor": actor})
 
-        if self.source_events_per_minute > 0:
+        if self.source_events_per_minute is not None and self.source_events_per_minute >= 0:
+            if self.source_events_per_minute == 0:
+                return Verdict(
+                    False,
+                    f"source {event.source!r} blocked: source_events_per_minute is 0",
+                    "source_rate_limit",
+                    {"source": event.source, "observed": 0,
+                     "limit": 0},
+                )
             recent = self.store.count_recent_events(event.source, since=moment - timedelta(minutes=1))
             if recent >= self.source_events_per_minute:
                 return Verdict(
