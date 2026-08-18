@@ -75,21 +75,40 @@ class AutonomyGovernor:
 
     # ------------------------------------------------------------------ intake
 
+
+    def _record_refusal(self, event, reason, verdict_type="refusal"):
+        """Record a refusal event in the persistent store."""
+        refusal_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_id": getattr(event, "id", "unknown"),
+            "source": getattr(event, "source", "unknown"),
+            "actor": getattr(event, "actor", ""),
+            "reason": reason,
+            "type": verdict_type,
+        }
+        # Store in a persistent store
+        self.store.record_refusal(refusal_entry)
+
     def admit_event(self, event: EventEnvelope, *, now: datetime | None = None) -> Verdict:
         """Refuse before the event is even matched against subscriptions."""
         moment = now or datetime.now(UTC)
 
         actor = (event.actor or "").strip()
         if actor and actor in self.self_actors:
-            return Verdict(False, f"event was caused by this agent ({actor}); refusing to answer itself",
-                           "self_trigger", {"actor": actor})
+                reason = f"event was caused by this agent ({actor}); refusing to answer itself"
+		self._record_refusal(event, reason, "self_trigger")
+		return Verdict(False, reason, "self_trigger", {"actor": actor})
+
+
 
         if self.source_events_per_minute > 0:
             recent = self.store.count_recent_events(event.source, since=moment - timedelta(minutes=1))
             if recent >= self.source_events_per_minute:
-                return Verdict(
+		reason = f"source {event.source!r} exceeded {self.source_events_per_minute} events/minute"
+		self._record_refusal(event, reason, "source_rate_limit")
+	        return Verdict(
                     False,
-                    f"source {event.source!r} exceeded {self.source_events_per_minute} events/minute",
+		    reason,
                     "source_rate_limit",
                     {"source": event.source, "observed": recent,
                      "limit": self.source_events_per_minute},
