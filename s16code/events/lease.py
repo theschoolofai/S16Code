@@ -83,6 +83,8 @@ class ScheduleLease:
                     held = None
                 if held:
                     expires = datetime.fromisoformat(held["expires_at"])
+                    if expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=UTC)
                     if expires > moment:
                         return LeaseVerdict(
                             False,
