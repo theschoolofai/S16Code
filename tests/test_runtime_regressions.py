@@ -195,7 +195,7 @@ def test_calendar_skill_is_general_and_uses_planner_supplied_iso_dates(app_clien
         "allowed_side_effects": ["remember_explicit_fact", "create_calendar_events"]}).json()
     artifacts = body["graph"]["nodes"]["calendar"]["result"]["artifacts"]
     assert len(artifacts) == 2
-    assert all(Path(uri.removeprefix("file://")).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
+    assert all(Path(uri.removeprefix("file:///").removeprefix("file://")).read_text().startswith("BEGIN:VCALENDAR") for uri in artifacts)
 
 
 def test_failed_file_read_is_visible_to_the_final_answer(app_client, monkeypatch, tmp_path):

@@ -246,3 +246,29 @@ def test_a_compacted_history_still_refuses_a_duplicate(tmp_path) -> None:
     record, fresh = store.ingest(_event(id="e0"))  # body long gone
     assert fresh is False
     assert record.get("compacted") is True
+
+
+async def test_morning_report_includes_awaiting_human_runs(tmp_path) -> None:
+    """Parked runs in waiting status must appear under awaiting_a_human in morning_report."""
+    from s16code.events.report import render_markdown
+
+    store = EventStore(tmp_path)
+
+    class _WaitingRuntime(_Runtime):
+        async def run(self, *, prompt: str, **_: object) -> dict[str, object]:
+            self.runs.append(prompt)
+            return {"run_id": "run-parked-1", "status": "waiting", "spend_usd": self.spend}
+
+    engine = AutonomousEventEngine(store, _WaitingRuntime())
+    store.put_subscription(_subscription())
+
+    await engine.process(_event(id="waiting-event"), llm=_relevance_llm(relevant=True))
+
+    report = morning_report(store)
+    assert len(report["awaiting_a_human"]) == 1
+    assert report["awaiting_a_human"][0]["run_id"] == "run-parked-1"
+    assert report["awaiting_a_human"][0]["status"] == "waiting"
+
+    md = render_markdown(report)
+    assert "## Awaiting Human (1)" in md
+    assert "run-parked-1" in md

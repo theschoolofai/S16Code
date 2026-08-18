@@ -65,6 +65,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
     acted: list[dict[str, Any]] = []
     ignored: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
+    awaiting_human: list[dict[str, Any]] = []
     triage_spend = 0.0
     for record in considered:
         event = record["event"]
@@ -76,8 +77,13 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
             if decision.get("refused_by"):
                 blocked.append({**entry, "control": decision["refused_by"]})
             elif decision.get("relevant"):
-                acted.append({**entry, "run_id": decision.get("run_id"),
-                              "status": decision.get("run_status")})
+                run_status = decision.get("run_status")
+                if run_status == "waiting":
+                    awaiting_human.append({**entry, "run_id": decision.get("run_id"),
+                                           "status": run_status})
+                else:
+                    acted.append({**entry, "run_id": decision.get("run_id"),
+                                  "status": run_status})
             else:
                 ignored.append(entry)
 
@@ -108,7 +114,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                                "subscription": item.get("subscription_id")}
                               for item in refusals],
         "budgets": budgets,
-        "awaiting_a_human": [],
+        "awaiting_a_human": awaiting_human,
     }
 
 
@@ -129,11 +135,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- cost of doing: ${totals['cost_of_doing_usd']:.8f}",
         "",
     ]
-    for title, key in (("Acted", "acted"), ("Ignored", "ignored"), ("Refused", "refused")):
+    for title, key in (("Acted", "acted"), ("Awaiting Human", "awaiting_a_human"), ("Ignored", "ignored"), ("Refused", "refused")):
         lines.append(f"## {title} ({len(report[key])})")
         if not report[key]:
             lines.append("_nothing_")
         for item in report[key][:100]:
-            lines.append(f"- `{item.get('event')}` — {item.get('reason') or item.get('control')}")
+            run_str = f" [{item['run_id']}]" if item.get("run_id") else ""
+            lines.append(f"- `{item.get('event')}` — {item.get('reason') or item.get('control')}{run_str}")
         lines.append("")
     return "\n".join(lines)

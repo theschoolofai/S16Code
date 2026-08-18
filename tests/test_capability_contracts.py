@@ -134,7 +134,11 @@ def test_every_registered_capability_has_a_worker_and_every_worker_is_registered
     async def never(prompt: str, system: str):  # noqa: ANN202, ARG001
         raise AssertionError("the probe must not reach a model")
 
+    from s16code.core.memory import MemoryScope
+    from s16code.core.memory.embeddings import DeterministicEmbedder
+
     runtime = runtime_module.AgentRuntime()
+    runtime.memory.embedder = DeterministicEmbedder(128)
     runtime_module.LiveGraphExecutor = _Probe
     try:
         with pytest.raises(_Stop):
