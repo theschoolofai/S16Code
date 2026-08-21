@@ -226,8 +226,15 @@ class GraphStore:
             return event
 
     def complete_waiting(self, handle: str, event_type: str, payload: dict[str, Any],
-                         *, success: bool = True) -> tuple[str, str, Event] | None:
-        """Complete one parked task; a duplicate delivery becomes a no-op."""
+                         *, success: bool = True,
+                         refuse_skills: frozenset[str] | set[str] = frozenset()) -> tuple[str, str, Event] | None:
+        """Complete one parked task; a duplicate delivery becomes a no-op.
+
+        ``refuse_skills`` lets a caller declare which capabilities are not its to
+        complete. A node parked for a person must not be released by whoever
+        happens to hold a machine credential, and the caller cannot check that
+        itself: the handle alone does not say what is waiting on it.
+        """
         with self._lock:
             matches = self._find_waiting(handle, event_type)
             if not matches:
@@ -236,6 +243,9 @@ class GraphStore:
                 raise GraphMutationError(f"wait handle {handle!r} is not unique")
             run_id, state, node_id = matches[0]
             node = state["graph"].nodes[node_id]
+            if refuse_skills and node.get("skill") in refuse_skills:
+                raise GraphMutationError(
+                    f"{node.get('skill')!r} is waiting for a person; this caller may not complete it")
             node["state"] = NodeState.SUCCEEDED if success else NodeState.FAILED
             node["result"] = payload
             node.pop("wait", None)

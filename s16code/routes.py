@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from s16code.auth import require_completion, require_control
+from s16code.core.live_graph.store import GraphMutationError
 from s16code.core.memory import MemoryKind, MemoryScope, Principal
 from s16code.telemetry import export_run
 
@@ -309,9 +310,18 @@ async def resume(run_id: str, request: Request):
 async def complete_waiting_job(body: CompletionBody, request: Request):
     """Consume an idempotent completion and continue from its real outcome."""
     runtime = request.app.state.runtime
-    completion = runtime.graph.complete_waiting(
-        body.handle, body.event_type, body.payload, success=body.success
-    )
+    try:
+        completion = runtime.graph.complete_waiting(
+            body.handle, body.event_type, body.payload, success=body.success,
+            # The completion token exists so a remote job service can report the
+            # work it was given without also gaining authority. The event type
+            # here is caller-supplied, so without this a holder who learns a
+            # parked handle could send `approval.received` and answer a question
+            # that was asked of a person.
+            refuse_skills=runtime.registry.family("human_gate"),
+        )
+    except GraphMutationError as error:
+        raise HTTPException(403, str(error)) from None
     if completion is None:
         # The same response is safe for an unknown and an already-consumed
         # handle: callers can retry without learning internal run identifiers.
