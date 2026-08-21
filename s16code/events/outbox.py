@@ -56,23 +56,41 @@ class ActionOutbox:
     async def execute(self, key: str,
                       operation: Callable[[], Awaitable[dict[str, Any] | Deferred]]) -> dict[str, Any] | Deferred:
         """Reuse a receipt; never blindly repeat an operation left in-flight by a crash."""
+        attempt = 1
+        previous_error = ""
         with self._lock:
             path = self._path(key)
             if path.exists():
                 record = json.loads(path.read_text(encoding="utf-8"))
-                if record["status"] == "completed":
+                status = record.get("status")
+                if status == "completed":
                     return self._decode(record["receipt"])
-                if record["status"] == "started":
+                if status == "started":
                     return Deferred(key, "outbox.reconcile", {"uncertain": True})
-                if record["status"] == "failed":
-                    raise RuntimeError(record["error"])
-            self._write(key, {"status": "started"})
+                if status == "failed":
+                    # A failed operation did not take effect, so running it again
+                    # is not a repeat — it is the first time it happens. This
+                    # outbox exists to stop one side effect being applied twice;
+                    # refusing a failure forever solves a different problem and
+                    # creates one, because a transient fault (a full disk, a rate
+                    # limit, a misconfigured path) becomes permanent: the receipt
+                    # outlives its cause, and repairing the cause changes nothing.
+                    attempt = int(record.get("attempt") or 1) + 1
+                    previous_error = str(record.get("error") or "")
+            marker: dict[str, Any] = {"status": "started", "attempt": attempt}
+            if previous_error:
+                # Keep why the last attempt failed: a retry that keeps failing
+                # for the same reason should be legible without a log search.
+                marker["previous_error"] = previous_error
+            self._write(key, marker)
         try:
             result = await operation()
         except Exception as error:
             with self._lock:
-                self._write(key, {"status": "failed", "error": f"{type(error).__name__}: {error}"})
+                self._write(key, {"status": "failed", "attempt": attempt,
+                                  "error": f"{type(error).__name__}: {error}"})
             raise
         with self._lock:
-            self._write(key, {"status": "completed", "receipt": self._encode(result)})
+            self._write(key, {"status": "completed", "attempt": attempt,
+                              "receipt": self._encode(result)})
         return result
