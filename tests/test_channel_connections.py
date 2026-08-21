@@ -265,3 +265,51 @@ def test_general_planner_can_discover_and_use_a_future_channel_adapter(app_clien
         channel="future_adapter", recipient_id="destination", text="The build passed.",
         thread_id=None, voice_audio_ref=None,
     )
+
+
+def test_a_job_callback_cannot_satisfy_a_human_approval(app_client, monkeypatch):
+    """The completion token completes work the agent handed out, not a human gate.
+
+    `S16_COMPLETION_TOKEN` is deliberately separate from the control token so a
+    remote job service can report its own result without gaining authority. But
+    `/completions` takes the event type from the caller, so a holder who learns a
+    parked handle -- `GET /v1/agent/runs/{id}` publishes them -- could send
+    `approval.received` and approve on the operator's behalf.
+    """
+    monkeypatch.setenv("S16_CHANNEL_BRIDGE_TOKEN", "shared")
+    monkeypatch.setenv("S16_CHANNEL_ALLOWED_SIDE_EFFECTS", "request_approval")
+    monkeypatch.setenv("S16_COMPLETION_TOKEN", "job-service")
+    app_client.app.state.runtime.memory.embedder = DeterministicEmbedder(128)
+
+    async def fake_gateway(_app, prompt: str, system: str):
+        if "evidence-readiness critic" in system:
+            return {"text": json.dumps({"ready": True, "missing": [], "reason": "enough"}),
+                    "provider": "fake", "model": "critic"}
+        if "decision core of a live-graph agent" in system:
+            patch = {"add": [{"id": "approve", "capability": "request_approval",
+                     "arguments": {"question": "Send the final report?", "choices": ["yes", "no"]},
+                     "depends_on": []}], "cancel": [], "finish": False,
+                     "reason": "sending needs approval"}
+            return {"text": json.dumps(patch), "provider": "fake", "model": "planner"}
+        return {"text": "answered", "provider": "fake", "model": "answer"}
+
+    monkeypatch.setattr(agent_route, "gateway_text_llm", fake_gateway)
+    parked = app_client.post("/v1/agent/channel-messages",
+                             headers={"Authorization": "Bearer shared"},
+                             json=_channel_message(metadata={"message_id": "gate-1"}))
+    assert parked.json()["text"].startswith("Approval needed:")
+
+    events = app_client.get("/v1/agent/events").json()["events"]
+    run_id = events[-1]["decisions"][0]["run_id"]
+    nodes = app_client.get(f"/v1/agent/runs/{run_id}").json()["nodes"]
+    handle = next(n["wait"]["handle"] for n in nodes.values() if (n.get("wait") or {}).get("handle"))
+
+    refused = app_client.post("/v1/agent/completions",
+                              headers={"Authorization": "Bearer job-service"},
+                              json={"handle": handle, "event_type": "approval.received",
+                                    "success": True, "payload": {"response": "yes"}})
+    assert refused.status_code == 403
+
+    # And the gate is still waiting for the person it was asked of.
+    nodes = app_client.get(f"/v1/agent/runs/{run_id}").json()["nodes"]
+    assert any(node.get("state") == "waiting" for node in nodes.values())
