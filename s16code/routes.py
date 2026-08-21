@@ -224,6 +224,10 @@ async def channel_message(
         "observed_at": datetime.now(UTC).isoformat(),
         "data": body.model_dump(mode="json"),
         "traceparent": None,
+        # Who sent it. An agent that answers on a channel it also watches sees
+        # its own reply arrive as a new message; naming the sender is what lets
+        # `S16_SELF_ACTORS` and a subscription's `ignore_actors` refuse it.
+        "actor": f"{body.channel}:{body.channel_user_id}",
     }
     from s16code.events import EventEnvelope
 

@@ -265,3 +265,23 @@ def test_general_planner_can_discover_and_use_a_future_channel_adapter(app_clien
         channel="future_adapter", recipient_id="destination", text="The build passed.",
         thread_id=None, voice_audio_ref=None,
     )
+
+
+def test_channel_event_records_who_sent_it(app_client, monkeypatch):
+    """Every producer must stamp `actor`, or the self-trigger guard is unreachable.
+
+    `AutonomyGovernor.admit_event` and `AutonomousEventEngine._self_caused` both
+    read `event.actor` and both short-circuit when it is empty. The guard has
+    unit tests, but they build envelopes by hand with `actor=` already set, so
+    nothing covered the wiring: no production producer filled the field, and the
+    loop protection could never fire on a real message.
+    """
+    monkeypatch.setenv("S16_CHANNEL_BRIDGE_TOKEN", "shared")
+    headers = {"Authorization": "Bearer shared"}
+
+    app_client.post("/v1/agent/channel-messages", headers=headers, json=_channel_message())
+
+    events = app_client.get("/v1/agent/events").json()["events"]
+    envelope = events[-1]["event"]
+    assert envelope["actor"], "a channel event must say who sent it"
+    assert "42" in envelope["actor"]
