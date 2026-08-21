@@ -114,3 +114,34 @@ async def test_outbox_reuses_receipt_and_parks_an_uncertain_crash_window(tmp_pat
     uncertain = await outbox.execute("crash-key", effect)
     assert uncertain.handle == "crash-key" and uncertain.event_type == "outbox.reconcile"
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_outbox_can_list_what_a_crash_left_uncertain(tmp_path):
+    """A run parked on an uncertain effect has to be findable.
+
+    `execute()` parks on `Deferred(key, "outbox.reconcile")` when it meets a
+    record left `started` by a crash. Nothing in the package ever emits that
+    event, so the only way out is an operator completing the handle by hand --
+    and they cannot, because nothing lists the stuck keys or says when they got
+    stuck. The run waits forever and no surface admits it.
+    """
+    outbox = ActionOutbox(tmp_path)
+
+    async def effect():
+        return {"external_id": "receipt-1"}
+
+    assert outbox.uncertain() == []
+
+    outbox._write("crash-key", {"status": "started"})
+    parked = await outbox.execute("crash-key", effect)
+    assert parked.event_type == "outbox.reconcile"
+
+    stuck = outbox.uncertain()
+    assert [item["key"] for item in stuck] == ["crash-key"]
+    assert stuck[0]["event_type"] == "outbox.reconcile"
+
+    # Resolving it the documented way clears it from the list.
+    await outbox.resolve("crash-key", {"external_id": "confirmed-by-operator"})
+    assert outbox.uncertain() == []
+    assert await outbox.execute("crash-key", effect) == {"external_id": "confirmed-by-operator"}
