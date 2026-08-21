@@ -1,4 +1,10 @@
-"""Thin normalizers. Transport-specific code ends at EventEnvelope."""
+"""Thin normalizers. Transport-specific code ends at EventEnvelope.
+
+Every producer stamps ``actor``: who caused this fact. Both loop guards --
+``AutonomyGovernor.admit_event`` and ``AutonomousEventEngine._self_caused`` --
+read that field and admit the event when it is empty, so a producer that leaves
+it unset silently disables them.
+"""
 
 from __future__ import annotations
 
@@ -11,16 +17,19 @@ from .models import EventEnvelope
 
 
 def cron_event(schedule_id: str, *, occurred_at: datetime | None = None,
-               data: dict[str, Any] | None = None) -> EventEnvelope:
+               data: dict[str, Any] | None = None, actor: str | None = None) -> EventEnvelope:
     instant = occurred_at or datetime.now(UTC)
     return EventEnvelope(id=f"{schedule_id}:{instant.isoformat()}", source=f"cron.{schedule_id}",
-                         type="schedule.tick", subject=schedule_id, occurred_at=instant, data=data or {})
+                         type="schedule.tick", subject=schedule_id, occurred_at=instant, data=data or {},
+                         actor=actor or f"cron.{schedule_id}")
 
 
 def webhook_event(*, source: str, delivery_id: str, event_type: str,
-                  payload: dict[str, Any], occurred_at: datetime | None = None) -> EventEnvelope:
+                  payload: dict[str, Any], occurred_at: datetime | None = None,
+                  actor: str | None = None) -> EventEnvelope:
     return EventEnvelope(id=delivery_id, source=source, type=event_type,
-                         occurred_at=occurred_at or datetime.now(UTC), data=payload)
+                         occurred_at=occurred_at or datetime.now(UTC), data=payload,
+                         actor=actor or source)
 
 
 def gmail_pubsub_event(message: dict[str, Any]) -> EventEnvelope:
@@ -38,4 +47,8 @@ def gmail_pubsub_event(message: dict[str, Any]) -> EventEnvelope:
     occurred = datetime.fromisoformat(str(published).replace("Z", "+00:00")) if published else datetime.now(UTC)
     return EventEnvelope(id=str(wrapped.get("messageId") or f"gmail-{payload['historyId']}"),
                          source="gmail.pubsub", type="gmail.history.changed",
-                         subject=str(payload["emailAddress"]), occurred_at=occurred, data=payload)
+                         subject=str(payload["emailAddress"]), occurred_at=occurred, data=payload,
+                         # The watched mailbox. An agent that answers from the same
+                         # address sees its own reply arrive here, which is the loop
+                         # `S16_SELF_ACTORS` exists to refuse.
+                         actor=f"gmail:{payload['emailAddress']}")
