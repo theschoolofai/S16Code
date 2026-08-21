@@ -100,6 +100,28 @@ async def test_jsonrpc_transport_requires_bearer_or_api_key():
         assert (await http.post("/a2a", json=payload, headers={"X-API-Key": "key-good"})).status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_jsonrpc_transport_refuses_to_serve_with_no_credential_configured():
+    """An unconfigured transport must refuse, not serve everybody.
+
+    The check above proves the gate works once tokens exist. Nothing covered the
+    state a fresh checkout is in -- no tokens at all -- where the guard was
+    skipped entirely and `message/send` ran work for any caller.
+    """
+    server = A2ADemoServer(card())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://a2a.test") as http:
+        payload = {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params()}
+        refused = await http.post("/a2a", json=payload)
+        assert refused.status_code == 503
+        assert "S16_A2A_BEARER_TOKENS" in refused.text
+
+    # Serving anonymously stays possible, but only when it is asked for.
+    opened = A2ADemoServer(card(), allow_anonymous=True)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=opened.app), base_url="http://a2a.test") as http:
+        payload = {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params()}
+        assert (await http.post("/a2a", json=payload)).status_code == 200
+
+
 def test_official_card_schema_and_version_negotiation():
     validate_agent_card(card(("1.0", "1.1")))
     assert negotiate_interface(card(("1.0", "1.1")), versions=("1.1", "1.0"))["protocolVersion"] == "1.1"
