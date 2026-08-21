@@ -114,3 +114,37 @@ async def test_outbox_reuses_receipt_and_parks_an_uncertain_crash_window(tmp_pat
     uncertain = await outbox.execute("crash-key", effect)
     assert uncertain.handle == "crash-key" and uncertain.event_type == "outbox.reconcile"
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_outbox_retries_an_effect_that_failed(tmp_path):
+    """A failed effect did not happen, so attempting it again is not a repeat.
+
+    The outbox exists to stop one side effect being applied twice. A failure is
+    the opposite case: nothing was applied. Refusing forever turns a transient
+    fault -- a full disk, a rate limit, a misconfigured path -- into a permanent
+    one, because the receipt outlives its cause and repairing the cause changes
+    nothing.
+    """
+    outbox = ActionOutbox(tmp_path)
+    attempts = 0
+
+    async def flaky():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("read-only file system")
+        return {"external_id": "receipt-after-retry"}
+
+    with pytest.raises(OSError):
+        await outbox.execute("retry-key", flaky)
+
+    # The cause is now repaired; the same operation must be allowed to run.
+    receipt = await outbox.execute("retry-key", flaky)
+    assert receipt == {"external_id": "receipt-after-retry"}
+    assert attempts == 2
+
+    # And having succeeded, it is a receipt like any other: never repeated.
+    replay = await outbox.execute("retry-key", flaky)
+    assert replay == {"external_id": "receipt-after-retry"}
+    assert attempts == 2
