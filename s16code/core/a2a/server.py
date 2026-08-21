@@ -91,6 +91,11 @@ class DurableTaskStore:
         self.db.close()
 
 
+def _matches(presented: str, accepted: set[str]) -> bool:
+    """Constant-time membership. `presented in accepted` leaks length and prefix."""
+    return bool(presented) and any(hmac.compare_digest(presented, item) for item in accepted)
+
+
 class A2ADemoServer:
     """Local reference adapter, not a replacement for the official A2A SDK.
 
@@ -101,6 +106,7 @@ class A2ADemoServer:
     def __init__(self, card: dict[str, Any], *, push_callback: PushCallback | None = None,
                  task_handler: TaskHandler | None = None, task_db: str | Path = ":memory:",
                  bearer_tokens: set[str] | None = None, api_keys: set[str] | None = None,
+                 allow_anonymous: bool = False,
                  push_signing_secret: str | None = None, push_http: httpx.AsyncClient | None = None,
                  push_attempts: int = 4, push_backoff: float = .05) -> None:
         validate_agent_card(card)
@@ -108,6 +114,10 @@ class A2ADemoServer:
         self.store = DurableTaskStore(task_db)
         self.tasks = self.store.load_all()
         self.bearer_tokens, self.api_keys = bearer_tokens or set(), api_keys or set()
+        # Serving anonymously is a decision, not a default. Without this the
+        # transport check below was skipped whenever no credential happened to be
+        # configured, which is the state a fresh checkout is in.
+        self.allow_anonymous = allow_anonymous
         self.push_signing_secret, self.push_http = push_signing_secret, push_http
         self.push_attempts, self.push_backoff = push_attempts, push_backoff
         self._jobs: dict[str, asyncio.Task[None]] = {}
@@ -128,11 +138,21 @@ class A2ADemoServer:
                 self._jobs[task.id] = asyncio.create_task(self._complete_later(task, 0))
 
     async def rpc(self, request: Request):
-        if self.bearer_tokens or self.api_keys:
+        if not (self.bearer_tokens or self.api_keys):
+            if not self.allow_anonymous:
+                # Refuse rather than serve everybody. `message/send` creates and
+                # runs a task, so an unconfigured transport is not a missing
+                # feature: it hands any caller the agent's time and budget.
+                return JSONResponse(
+                    self._error(None, -32003,
+                                "S16_A2A_BEARER_TOKENS or S16_A2A_API_KEYS is not configured; "
+                                "the A2A transport refuses to serve without it"),
+                    status_code=503)
+        else:
             bearer = request.headers.get("authorization", "")
             bearer = bearer[7:] if bearer.lower().startswith("bearer ") else ""
             api_key = request.headers.get("x-api-key", "")
-            if not ((bearer and bearer in self.bearer_tokens) or (api_key and api_key in self.api_keys)):
+            if not (_matches(bearer, self.bearer_tokens) or _matches(api_key, self.api_keys)):
                 return JSONResponse(self._error(None, -32003, "A2A transport authentication required"), status_code=401,
                                     headers={"WWW-Authenticate": "Bearer"})
         body = await request.json()

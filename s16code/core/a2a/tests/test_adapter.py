@@ -37,7 +37,10 @@ async def setup(keys):
     async def pushed(event):
         received.append(event)
 
-    server = A2ADemoServer(sign_card(card(), private, kid="local-1"), push_callback=pushed)
+    server = A2ADemoServer(sign_card(card(), private, kid="local-1"), push_callback=pushed,
+                           # This fixture drives the transport without a credential;
+                           # serving anonymously is now something a caller must ask for.
+                           allow_anonymous=True)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://a2a.test")
     trust = AgentCardTrustPolicy(key_resolver=lambda kid: public if kid == "local-1" else None)
     yield server, A2AClient(http, trust), received
