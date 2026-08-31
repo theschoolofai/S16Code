@@ -116,6 +116,7 @@ def test_every_registered_capability_has_a_worker_and_every_worker_is_registered
 
     import s16code.runtime as runtime_module
     from s16code.core.memory import MemoryScope
+    from s16code.core.memory.embeddings import DeterministicEmbedder
 
     captured: set[str] = set()
 
@@ -134,7 +135,7 @@ def test_every_registered_capability_has_a_worker_and_every_worker_is_registered
     async def never(prompt: str, system: str):  # noqa: ANN202, ARG001
         raise AssertionError("the probe must not reach a model")
 
-    runtime = runtime_module.AgentRuntime()
+    runtime = runtime_module.AgentRuntime(memory_embedder=DeterministicEmbedder(128))
     runtime_module.LiveGraphExecutor = _Probe
     try:
         with pytest.raises(_Stop):
@@ -146,4 +147,17 @@ def test_every_registered_capability_has_a_worker_and_every_worker_is_registered
         assert registered - captured == set(), f"capabilities with no worker: {registered - captured}"
     finally:
         runtime_module.LiveGraphExecutor = original_executor
+        runtime.close()
+
+
+def test_agent_runtime_accepts_an_injected_memory_embedder(tmp_path) -> None:
+    """Runtime-level tests must be able to stay offline without mutating internals."""
+    from s16code.core.memory.embeddings import DeterministicEmbedder
+    from s16code.runtime import AgentRuntime
+
+    embedder = DeterministicEmbedder(32)
+    runtime = AgentRuntime(root=tmp_path / "state", memory_embedder=embedder)
+    try:
+        assert runtime.memory.embedder is embedder
+    finally:
         runtime.close()
