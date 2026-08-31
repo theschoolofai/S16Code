@@ -27,7 +27,7 @@ from s16code.core.a2a import A2AClient
 from s16code.core.a2a.trust import AgentCardTrustPolicy
 from s16code.core.live_graph import Deferred, GraphStore, LiveGraphExecutor, TaskSpec
 from s16code.core.memory import MemoryKind, MemoryRecord, MemoryScope, MemoryStore, Principal, SourceRef
-from s16code.core.memory.embeddings import OllamaNomicEmbedder
+from s16code.core.memory.embeddings import Embedder, OllamaNomicEmbedder
 from s16code.economics import (
     TIER_KEY,
     BudgetAwarePlanner,
@@ -120,14 +120,14 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
 class AgentRuntime:
     """Owns the persistent stores and runs one user request through the graph."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *, memory_embedder: Embedder | None = None) -> None:
         # Resolve the config directory at construction time.  Tests and
         # embedders can deliberately use a different local profile in the
         # same Python process; importing CONFIG_DIR by value would leak memory
         # between those profiles.
         self.root = root or Path(os.getenv("S16_DATA_DIR", str(Path.home() / ".s16code")))
         self.root.mkdir(parents=True, exist_ok=True)
-        self.memory = MemoryStore(self.root / "memory.sqlite", embedder=OllamaNomicEmbedder())
+        self.memory = MemoryStore(self.root / "memory.sqlite", embedder=memory_embedder or OllamaNomicEmbedder())
         self.graph = GraphStore(self.root / "graphs")
         self.outbox = ActionOutbox(self.root / "outbox")
         # One registry per runtime: the single source of truth for what a
