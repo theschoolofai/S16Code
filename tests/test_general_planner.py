@@ -177,6 +177,52 @@ async def test_task_keyed_provider_json_is_normalized_by_capability_schema():
 
 
 @pytest.mark.asyncio
+async def test_new_tasks_provider_alias_is_normalized_to_add():
+    reply = Replies({
+        "new_tasks": [{
+            "name": "answer_with_evidence",
+            "arguments": {"query": "Give a concise greeting."},
+        }],
+        "cancel": [],
+        "finish": False,
+        "reason": "answer the direct request",
+    })
+    planner = GeneralAgentPlanner(
+        reply,
+        default_registry(),
+        goal="Give a concise greeting.",
+        review_terminal=False,
+    )
+    patch = await planner.plan(snapshot(), Event(1, "run_started", None, {}))
+    assert [(task.id, task.skill) for task in patch.add] == [
+        ("answer_with_evidence_1", "answer_with_evidence")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_tasks_node_id_alias_and_missing_dependencies_are_normalized():
+    reply = Replies({
+        "new_tasks": [{
+            "node_id": "clock",
+            "capability": "current_datetime",
+            "arguments": {"timezone": "UTC"},
+        }],
+        "cancel": [],
+        "finish": False,
+        "reason": "read the clock",
+    })
+    planner = GeneralAgentPlanner(
+        reply,
+        default_registry(),
+        goal="What time is it?",
+        review_terminal=False,
+    )
+    patch = await planner.plan(snapshot(), Event(1, "run_started", None, {}))
+    assert [(task.id, task.skill) for task in patch.add] == [("clock", "current_datetime")]
+    assert patch.connect == ()
+
+
+@pytest.mark.asyncio
 async def test_capability_prefixed_task_key_is_normalized_without_a_channel_table():
     reply = Replies({"send_channel_message_3": {
         "channel": "future_adapter", "recipient_id": "destination", "text": "done",
