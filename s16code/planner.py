@@ -171,6 +171,29 @@ class GeneralAgentPlanner:
 
     def _parse(self, text: str, graph: GraphSnapshot) -> GraphPatch:
         data = _json_object(text)
+        # A few local/open-weight providers label the advertised next frontier
+        # ``new_tasks`` even after repair. Treat that as a wire alias for
+        # ``add`` while keeping the strict task and capability validation below.
+        if "new_tasks" in data and "add" not in data:
+            data["add"] = data.pop("new_tasks")
+        additions = data.get("add")
+        if isinstance(additions, list):
+            normalized_additions: list[Any] = []
+            for index, raw in enumerate(additions, start=1):
+                if isinstance(raw, dict):
+                    raw = dict(raw)
+                    if "id" not in raw and isinstance(raw.get("node_id"), str):
+                        raw["id"] = raw.pop("node_id")
+                    if "capability" not in raw:
+                        provider_name = raw.get("name")
+                        if isinstance(provider_name, str) and provider_name in self.registry:
+                            raw["capability"] = raw.pop("name")
+                    if "id" not in raw and isinstance(raw.get("capability"), str):
+                        raw["id"] = f"{raw['capability']}_{len(graph.nodes) + index}"
+                    if set(raw).issubset({"id", "capability", "arguments", "depends_on"}):
+                        raw.setdefault("depends_on", [])
+                normalized_additions.append(raw)
+            data["add"] = normalized_additions
         # Normalize the provider-style {"capability": {arguments}} shorthand
         # for every advertised capability. This is a protocol adapter, not a
         # task, benchmark, or domain fallback.
