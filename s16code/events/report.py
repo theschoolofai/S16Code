@@ -74,6 +74,9 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
                      "subscription": decision.get("subscription_id"),
                      "reason": decision.get("reason", "")}
             if decision.get("refused_by"):
+                # Counted from the refusal ledger below, which already holds
+                # every one of these. Kept here only to keep a refused decision
+                # out of `ignored`.
                 blocked.append({**entry, "control": decision["refused_by"]})
             elif decision.get("relevant"):
                 acted.append({**entry, "run_id": decision.get("run_id"),
@@ -94,7 +97,7 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
             "events_seen": len(considered),
             "acted": len(acted),
             "ignored": len(ignored),
-            "blocked_by_a_control": len(blocked) + len(refusals),
+            "blocked_by_a_control": len(refusals),
             # The two bills the session insists on separating: what it cost to
             # be awake, and what it cost to do something.
             "cost_of_watching_usd": round(triage_spend, 10),
@@ -102,11 +105,11 @@ def morning_report(store: EventStore, *, since: datetime | None = None,
         },
         "acted": acted,
         "ignored": ignored,
-        "refused": blocked + [{"event": f"{(item.get('event') or {}).get('source')}/"
-                                        f"{(item.get('event') or {}).get('id')}",
-                               "control": item.get("control"), "reason": item.get("reason"),
-                               "subscription": item.get("subscription_id")}
-                              for item in refusals],
+        "refused": [{"event": f"{(item.get('event') or {}).get('source')}/"
+                              f"{(item.get('event') or {}).get('id')}",
+                     "control": item.get("control"), "reason": item.get("reason"),
+                     "subscription": item.get("subscription_id")}
+                    for item in refusals],
         "budgets": budgets,
         "awaiting_a_human": [],
     }
