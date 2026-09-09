@@ -133,6 +133,10 @@ class AutonomousEventEngine:
                                                   subscription_id=subscription.id, detail=admit.detail)
                         self.store.add_decision(event.source, event.id, decision)
                         return decision
+                    # Take the window slot before the first await. `admit_run`
+                    # reads the count; recording it only after the run let two
+                    # deliveries in flight at once both pass a ceiling of one.
+                    self.governor.record(subscription.id, kind="run", usd=0.0, now=now)
                     budget = admit.detail.get("effective_budget", subscription.budget)
                     result = await self.runtime.run(
                         prompt=goal,
@@ -144,7 +148,7 @@ class AutonomousEventEngine:
                         budget=budget, transport=transport,
                         initial_evidence={"event": event.model_dump(mode="json")},
                     )
-                    self.governor.record(subscription.id, kind="run",
+                    self.governor.record(subscription.id, kind="run", count=0,
                                          usd=float(result.get("spend_usd") or 0.0), now=now)
                     decision.update(run_id=result["run_id"], run_status=result["status"], acted=True)
                 self.store.add_decision(event.source, event.id, decision)

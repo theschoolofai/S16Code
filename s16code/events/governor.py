@@ -150,9 +150,9 @@ class AutonomyGovernor:
     # ----------------------------------------------------------------- ledger
 
     def record(self, subscription_id: str, *, kind: str, usd: float = 0.0,
-               now: datetime | None = None) -> None:
+               count: int = 1, now: datetime | None = None) -> None:
         self.store.window_record(subscription_id, _day(now or datetime.now(UTC)),
-                                 kind=kind, usd=usd)
+                                 kind=kind, usd=usd, count=count)
 
     def snapshot(self, subscription: Subscription, *, now: datetime | None = None) -> dict[str, Any]:
         """What an operator needs to see: how much of each bound is left."""

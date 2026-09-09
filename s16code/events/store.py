@@ -198,12 +198,15 @@ class EventStore:
 
     # ---------------------------------------------------------- window ledger
 
-    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0) -> None:
+    def window_record(self, subscription_id: str, day: str, *, kind: str, usd: float = 0.0,
+                      count: int = 1) -> None:
+        """Move a window counter. ``count=0`` settles the cost of a slot already
+        taken, so admission and billing can be two separate writes."""
         with self._lock:
             state = self._load()
             bucket = state["windows"].setdefault(f"{subscription_id}|{day}", {})
             entry = bucket.setdefault(kind, {"count": 0, "usd": 0.0})
-            entry["count"] += 1
+            entry["count"] += count
             entry["usd"] = round(entry["usd"] + max(0.0, float(usd)), 12)
             self._save(state)
 
