@@ -103,6 +103,8 @@ def _channel_reply(body: ChannelMessageBody, result: dict[str, Any],
                    human_gates: set[str] | None = None) -> dict[str, Any]:
     if result["status"] == "completed":
         text = result.get("answer") or "Completed."
+        if text.strip().upper() == "IGNORE":
+            text = None
     elif result["status"] == "waiting":
         waiting = [node for node in result.get("graph", {}).get("nodes", {}).values()
                    if node.get("state") == "waiting"]
@@ -247,7 +249,14 @@ async def channel_message(
         })
         return reply
 
-    prompt = body.text or "Respond to the attached channel message."
+    prompt = f"""You are an AI assistant managing an inbox.
+Evaluate the following email message:
+
+{body.text or '(No email body provided)'}
+
+If the message asks something important with a deadline and is NOT a mass-forwarded email sent to all employees, generate a helpful reply to the email.
+If the message is NOT important, lacks a deadline, or is a mass forward, respond EXACTLY with the word "IGNORE". Do not explain. Just output "IGNORE".
+"""
     initial_evidence = {"channel_message": body.model_dump(mode="json")}
     configured_authority = {
         item.strip()
