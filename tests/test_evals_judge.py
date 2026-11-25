@@ -44,7 +44,7 @@ def _string_literals(package: Path) -> set[str]:
     import ast
 
     found: set[str] = set()
-    for path in sorted(package.rglob("*.py")):
+    for path in sorted(p for p in package.rglob("*.py") if not p.name.startswith("._")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings = {
             ast.get_docstring(node)
@@ -320,7 +320,9 @@ def test_the_shipped_task_file_is_data_and_spans_difficulty():
     assert len(labels) >= 3, f"a single-difficulty set measures nothing: {labels}"
     # No task text or expectation appears anywhere in the library.
     library = Path(__file__).resolve().parents[1] / "s16code"
-    sources = "\n".join(path.read_text(encoding="utf-8") for path in library.rglob("*.py"))
+    sources = "\n".join(path.read_text(encoding="utf-8")
+                        for path in library.rglob("*.py")
+                        if not path.name.startswith("._"))
     for task in tasks:
         assert task.task[:40] not in sources
         assert (task.expectation or "@@")[:40] not in sources
